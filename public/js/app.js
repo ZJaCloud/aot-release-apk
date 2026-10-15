@@ -166,34 +166,38 @@ function formatBytes(bytes) {
 }
 
 // ==================== UPLOAD & AUTO RELEASE ====================
-uploadForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-
-  if (!selectedFile) {
-    showToast('请先选择或拖拽 APK 文件', 'error');
-    return;
-  }
+async function handleUploadAndRelease() {
+  const versionVal = inputVersion.value.trim();
+  const channelVal = inputChannel.value;
+  const changelogVal = inputChangelog.value.trim();
+  const sendEmailCheckbox = document.getElementById('input-send-email');
+  const sendEmail = sendEmailCheckbox ? sendEmailCheckbox.checked : false;
 
   const formData = new FormData();
-  formData.append('apkFile', selectedFile);
-  formData.append('version', inputVersion.value);
-  formData.append('channel', inputChannel.value);
-  formData.append('recipients', inputRecipients.value);
-  formData.append('changelog', inputChangelog.value);
+  if (selectedFile) {
+    formData.append('apkFile', selectedFile);
+  } else {
+    showToast('未选择外部 APK，将自动使用内置 sample-debug.apk 发版', 'info');
+  }
+
+  formData.append('version', versionVal);
+  formData.append('channel', channelVal);
+  formData.append('changelog', changelogVal);
+  formData.append('sendEmail', sendEmail ? 'true' : 'false');
 
   // Disable UI and show progress
   btnSubmitUpload.disabled = true;
   uploadProgressContainer.style.display = 'block';
   progressStatusText.style.display = 'block';
-  uploadProgressBar.style.width = '10%';
-  progressStatusText.textContent = '正在上传 APK 文件...';
+  uploadProgressBar.style.width = '20%';
+  progressStatusText.textContent = '正在打包并同步 Git Tag 推送至 GitHub...';
 
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/releases/upload', true);
 
   xhr.upload.onprogress = (event) => {
     if (event.lengthComputable) {
-      const percent = Math.round((event.loaded / event.total) * 80);
+      const percent = Math.min(85, Math.round((event.loaded / event.total) * 85));
       uploadProgressBar.style.width = `${percent}%`;
       progressStatusText.textContent = `正在传输数据 (${percent}%)...`;
     }
@@ -202,17 +206,22 @@ uploadForm.addEventListener('submit', (e) => {
   xhr.onload = () => {
     if (xhr.status >= 200 && xhr.status < 300) {
       uploadProgressBar.style.width = '100%';
-      progressStatusText.textContent = '打包完成！正在写入 Release 并触发邮件通知...';
+      progressStatusText.textContent = '发布完成！Git 标签已就绪！';
 
       try {
         const response = JSON.parse(xhr.responseText);
         const newRelease = response.data.release;
+        const gitResult = response.data.gitResult;
 
-        showToast(`🎉 成功打成 ${newRelease.releaseName}，邮件通知已发送！`, 'success');
+        let successMsg = `🎉 成功生成版本 ${newRelease.gitTag || newRelease.releaseName}！`;
+        if (gitResult && gitResult.success) {
+          successMsg += ' 已推送到 GitHub 远端！';
+        }
+        showToast(successMsg, 'success');
 
         // Reset Form
         selectedFile = null;
-        apkFileInput.value = '';
+        if (apkFileInput) apkFileInput.value = '';
         selectedFileBox.style.display = 'none';
         apkDropzone.style.display = 'block';
         inputVersion.value = '';
@@ -227,8 +236,9 @@ uploadForm.addEventListener('submit', (e) => {
           fetchReleases();
           switchToTab('tab-releases');
 
-          // Open the email preview modal to show the user the generated email!
-          openEmailModal(newRelease);
+          if (sendEmail && newRelease.emailNotification) {
+            openEmailModal(newRelease);
+          }
         }, 600);
       } catch (err) {
         showToast('响应解析异常: ' + err.message, 'error');
@@ -251,7 +261,22 @@ uploadForm.addEventListener('submit', (e) => {
   };
 
   xhr.send(formData);
-});
+}
+
+// Bind both button click and form submit
+if (btnSubmitUpload) {
+  btnSubmitUpload.addEventListener('click', (e) => {
+    e.preventDefault();
+    handleUploadAndRelease();
+  });
+}
+
+if (uploadForm) {
+  uploadForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    handleUploadAndRelease();
+  });
+}
 
 function resetUploadProgress() {
   btnSubmitUpload.disabled = false;

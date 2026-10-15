@@ -15,6 +15,11 @@ import {
   DEFAULT_REPO,
   DEFAULT_PACKAGE_NAME
 } from './services/githubReleaseService.js';
+import {
+  pushGitTag,
+  GITHUB_REPO,
+  SSH_REMOTE_URL
+} from './services/gitService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -133,7 +138,7 @@ const server = http.createServer(async (req, res) => {
     const boundary = boundaryMatch[1].replace(/^["']|["']$/g, '');
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const fullBuffer = Buffer.concat(chunks);
         const parts = parseMultipartFormData(fullBuffer, boundary);
@@ -150,13 +155,22 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (!filePart || !filePart.data || filePart.data.length === 0) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          return res.end(JSON.stringify({ code: 400, message: '未检测到有效的 APK 文件' }));
+          const sampleApkPath = path.join(__dirname, 'sample-debug.apk');
+          if (fs.existsSync(sampleApkPath)) {
+            filePart = {
+              filename: 'sample-debug.apk',
+              data: fs.readFileSync(sampleApkPath)
+            };
+          } else {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            return res.end(JSON.stringify({ code: 400, message: '未检测到有效的 APK 文件，请选择或拖拽 APK' }));
+          }
         }
 
         const host = req.headers.host || `localhost:${PORT}`;
+        const sendEmail = fields.sendEmail === 'true'; // 默认免除邮箱通知
 
-        // Call core release engine to build release package & dispatch email notification
+        // Call core release engine to build release package
         const { release, emailRecord } = createReleaseFromApk({
           fileBuffer: filePart.data,
           originalFileName: filePart.filename || 'app.apk',
@@ -164,16 +178,30 @@ const server = http.createServer(async (req, res) => {
           channel: fields.channel,
           changelog: fields.changelog,
           recipients: fields.recipients,
-          host
+          host,
+          sendEmail
         });
 
-        console.log(`[Release Engine] 成功生成 ${release.releaseName} (${release.fileSizeFormatted}) - 已触发发布邮件通知`);
+        // 自动创建 Git Tag 并尝试通过 SSH 推送到 GitHub
+        let gitResult = null;
+        try {
+          gitResult = await pushGitTag({
+            tag: release.gitTag,
+            message: release.changelog
+          });
+          release.gitPushStatus = gitResult.success ? 'pushed' : 'tagged_locally';
+          release.gitPushMessage = gitResult.message;
+        } catch (gitErr) {
+          console.warn('[Git SSH push]:', gitErr.message);
+        }
+
+        console.log(`[Release Engine] 成功生成 ${release.gitTag || release.releaseName} (${release.fileSizeFormatted}) - Git状态: ${release.gitPushStatus || 'ready'}`);
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         return res.end(JSON.stringify({
           code: 0,
-          message: `成功生成发布包 ${release.releaseName} 并已触发邮件通知`,
-          data: { release, emailRecord }
+          message: `成功生成发布包 ${release.gitTag || release.releaseName}${gitResult ? ' (' + gitResult.message + ')' : ''}`,
+          data: { release, emailRecord, gitResult }
         }));
       } catch (err) {
         console.error('Error processing upload:', err);

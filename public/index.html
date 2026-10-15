@@ -85,10 +85,10 @@
         <form id="upload-form">
           <!-- Dropzone -->
           <div class="dropzone" id="apk-dropzone">
-            <input type="file" id="apk-file-input" accept=".apk" required>
+            <input type="file" id="apk-file-input" accept=".apk">
             <div class="drop-icon">📱</div>
             <div class="drop-text">拖拽最新的 .apk 安装包至此处，或点击浏览选择</div>
-            <div class="drop-subtext">支持标准 Android APK 文件，上传后将严格按自增规则自动打包为 release-数字</div>
+            <div class="drop-subtext">支持标准 Android APK 文件；未选择时将自动使用内置的 sample-debug.apk 发版</div>
           </div>
 
           <!-- Selected File Details Banner -->
@@ -109,7 +109,7 @@
               <label class="form-label">
                 <span>版本号 (Version Name)</span>
               </label>
-              <input type="text" class="form-input" id="input-version" placeholder="例如：v1.0.1 (默认跟随编号)">
+              <input type="text" class="form-input" id="input-version" placeholder="例如：v1.0.0 (将自动规范为 Tag)">
             </div>
 
             <div class="form-group">
@@ -117,23 +117,31 @@
                 <span>发布渠道 / 适配目标</span>
               </label>
               <select class="form-select" id="input-channel">
-                <option value="智驾云·车机正式版">智驾云·车机正式版</option>
-                <option value="智驾云·研发测试版">智驾云·研发测试版</option>
+                <option value="智驾云·车机正式版">智驾云·车机正式版 (Latest)</option>
+                <option value="智驾云·研发测试版">智驾云·研发测试版 (Pre-release)</option>
                 <option value="AOT·座舱互联尝鲜版">AOT·座舱互联尝鲜版</option>
                 <option value="内部联调专用">内部联调专用</option>
               </select>
             </div>
 
             <div class="form-group full-width">
-              <label class="form-label">
-                <span>邮件通知抄送收件人 (多邮箱以英文逗号隔开)</span>
+              <label class="form-label" style="display: flex; justify-content: space-between;">
+                <span>GitHub 目标仓库 (SSH 地址)</span>
+                <span style="font-size: 12px; color: #16a34a; font-weight: normal;">SSH 认证已就绪</span>
               </label>
-              <input type="text" class="form-input" id="input-recipients" placeholder="qa@zhijiayun.com, dev@zhijiayun.com">
+              <input type="text" class="form-input" id="input-git-repo" value="git@github.com:ZJaCloud/aot-release-apk.git" readonly style="background: #f8fafc; color: #475569;">
+            </div>
+
+            <div class="form-group full-width" style="margin-top: -6px; margin-bottom: 4px;">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--slate-600); cursor: pointer;">
+                <input type="checkbox" id="input-send-email" style="cursor: pointer;">
+                <span>同时向邮件组派发通知 (默认不发邮件，直接发布并推送到 GitHub)</span>
+              </label>
             </div>
 
             <div class="form-group full-width">
               <label class="form-label">
-                <span>📝 版本更新日志与说明 (将自动渲染进邮件通知)</span>
+                <span>📝 版本更新日志与说明 (写入 Release 说明，门市更新对话框展示)</span>
               </label>
               <textarea class="form-textarea" id="input-changelog" placeholder="例如：
 1. 优化 AOT 座舱协议通信延迟
@@ -151,9 +159,9 @@
           <!-- Action Row -->
           <div class="action-row">
             <div style="font-size: 13px; color: var(--slate-500);">
-              💡 规则提示：包名将严格按 <strong>release-数字</strong> (如 1, 2, 3...) 递增生成，并自动派发发布邮件。
+              💡 规则提示：自动对齐规范 Tag (如 v1.0.0)，通过 SSH 推送至 GitHub 并生成 Release。
             </div>
-            <button type="submit" class="btn-primary" id="btn-submit-upload">
+            <button type="button" class="btn-primary" id="btn-submit-upload">
               <span>🚀 推送并自动生成 Release 包</span>
             </button>
           </div>

@@ -197,7 +197,10 @@ export function createReleaseFromApk({
   channel = '智驾云·车机正式版',
   changelog,
   recipients = [],
-  host = 'localhost:3000'
+  host = 'localhost:3000',
+  sendEmail = true,
+  packageName = 'com.zhijiayun.aot',
+  repo = 'ZJaCloud/aot-release-apk'
 }) {
   if (!fileBuffer || fileBuffer.length === 0) {
     throw new Error('未提供有效的 APK 二进制数据');
@@ -230,7 +233,9 @@ export function createReleaseFromApk({
   const fileSize = fileBuffer.length;
   const fileSizeFormatted = formatBytes(fileSize);
 
-  const finalVersion = version?.trim() || `v1.0.${releaseId}`;
+  const cleanVersion = (version || '').trim().replace(/^v/, '');
+  const finalVersion = cleanVersion ? `v${cleanVersion}` : `v1.0.${releaseId}`;
+  const gitTag = finalVersion;
   const finalChangelog = changelog?.trim() || '日常构建更新，性能优化与稳定性提升';
 
   // 解析并处理接收人列表
@@ -248,6 +253,9 @@ export function createReleaseFromApk({
     id: releaseId,
     releaseName,
     version: finalVersion,
+    gitTag,
+    packageName,
+    repo,
     originalFileName,
     storedFileName: standardApkFileName,
     filePath: standardFilePath,
@@ -260,39 +268,42 @@ export function createReleaseFromApk({
     downloadUrl,
     createdAt: new Date().toISOString(),
     status: 'ready',
-    emailStatus: 'sent',
+    emailStatus: sendEmail ? 'sent' : 'skipped',
     emailNotification: null
   };
 
-  // 形式 1: 每次更新之后，触发邮件通知
-  const emailContent = generateEmailContent(newRelease, store.emailSettings);
-  const emailRecord = {
-    id: 'mail-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
-    releaseId,
-    releaseName,
-    subject: emailContent.subject,
-    recipients: finalRecipients,
-    sender: store.emailSettings.senderEmail,
-    senderName: store.emailSettings.senderName,
-    sentAt: new Date().toISOString(),
-    status: 'success',
-    html: emailContent.html,
-    summary: `已向 ${finalRecipients.length} 位联系人推送 ${releaseName} 版本发布邮件`
-  };
+  let emailRecord = null;
+  if (sendEmail) {
+    // 形式 1: 触发邮件通知
+    const emailContent = generateEmailContent(newRelease, store.emailSettings);
+    emailRecord = {
+      id: 'mail-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
+      releaseId,
+      releaseName,
+      subject: emailContent.subject,
+      recipients: finalRecipients,
+      sender: store.emailSettings.senderEmail,
+      senderName: store.emailSettings.senderName,
+      sentAt: new Date().toISOString(),
+      status: 'success',
+      html: emailContent.html,
+      summary: `已向 ${finalRecipients.length} 位联系人推送 ${releaseName} 版本发布邮件`
+    };
 
-  newRelease.emailNotification = {
-    sent: true,
-    sentAt: emailRecord.sentAt,
-    subject: emailRecord.subject,
-    recipients: finalRecipients,
-    previewHtml: emailRecord.html
-  };
+    newRelease.emailNotification = {
+      sent: true,
+      sentAt: emailRecord.sentAt,
+      subject: emailRecord.subject,
+      recipients: finalRecipients,
+      previewHtml: emailRecord.html
+    };
+
+    if (!store.emailLogs) store.emailLogs = [];
+    store.emailLogs.unshift(emailRecord);
+  }
 
   // 持久化存储
   store.releases.unshift(newRelease);
-  if (!store.emailLogs) store.emailLogs = [];
-  store.emailLogs.unshift(emailRecord);
-
   saveStore(store);
 
   return { release: newRelease, emailRecord };
