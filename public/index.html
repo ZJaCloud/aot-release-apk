@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智驾云 AOT · APK 自动构建 Release 与邮件通知平台</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚀</text></svg>">
+</head>
+<body>
+
+  <!-- Top Navbar -->
+  <header class="navbar">
+    <div class="nav-container">
+      <div class="brand">
+        <div class="brand-icon">🤖</div>
+        <div>
+          <div class="brand-title">
+            智驾云 AOT · APK 自动化发布
+            <span class="brand-tag">自动打包 release-N</span>
+          </div>
+        </div>
+      </div>
+      <nav class="nav-links">
+        <button class="nav-tab active" data-tab="tab-upload">📦 推送打包</button>
+        <button class="nav-tab" data-tab="tab-releases">📋 Release 列表</button>
+        <button class="nav-tab" data-tab="tab-emails">✉️ 邮件通知中心</button>
+        <button class="nav-tab" data-tab="tab-github">🚀 GitHub 规范发布</button>
+        <button class="nav-tab" data-tab="tab-monitor">🔍 Monitor 检查更新</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="main-wrapper">
+
+    <!-- Overall Stats -->
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon blue">🏷️</div>
+        <div class="stat-content">
+          <span class="stat-label">下一个 Release 编号</span>
+          <span class="stat-value" id="stat-next-release">release-1</span>
+          <span class="stat-hint">自增唯一命名规则</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon green">📦</div>
+        <div class="stat-content">
+          <span class="stat-label">已生成 Release 包</span>
+          <span class="stat-value" id="stat-total-releases">0</span>
+          <span class="stat-hint">历史累计发布版本</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon purple">✉️</div>
+        <div class="stat-content">
+          <span class="stat-label">邮件通知触发</span>
+          <span class="stat-value" id="stat-email-count">0 次</span>
+          <span class="stat-hint">每次发布自动派发通知</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon amber">💾</div>
+        <div class="stat-content">
+          <span class="stat-label">包体存储占用</span>
+          <span class="stat-value" id="stat-storage-size">0 MB</span>
+          <span class="stat-hint">APK 存储库</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 1: Push & Upload APK (Auto build release) -->
+    <div id="tab-upload" class="tab-pane active">
+      <div class="upload-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>🚀 上传最新 APK 并自动生成 Release 包</span>
+          </div>
+          <div class="next-badge">
+            <span>即将生成：</span>
+            <strong id="badge-next-name">release-1</strong>
+          </div>
+        </div>
+
+        <form id="upload-form">
+          <!-- Dropzone -->
+          <div class="dropzone" id="apk-dropzone">
+            <input type="file" id="apk-file-input" accept=".apk" required>
+            <div class="drop-icon">📱</div>
+            <div class="drop-text">拖拽最新的 .apk 安装包至此处，或点击浏览选择</div>
+            <div class="drop-subtext">支持标准 Android APK 文件，上传后将严格按自增规则自动打包为 release-数字</div>
+          </div>
+
+          <!-- Selected File Details Banner -->
+          <div class="selected-file-box" id="selected-file-box">
+            <div class="file-info">
+              <div class="file-icon-apk">APK</div>
+              <div>
+                <div class="file-name" id="display-file-name">app-release.apk</div>
+                <div class="file-size" id="display-file-size">0 MB</div>
+              </div>
+            </div>
+            <button type="button" class="btn-remove-file" id="btn-remove-file" title="移除并重新选择">✕</button>
+          </div>
+
+          <!-- Metadata Form -->
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">
+                <span>版本号 (Version Name)</span>
+              </label>
+              <input type="text" class="form-input" id="input-version" placeholder="例如：v1.0.1 (默认跟随编号)">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <span>发布渠道 / 适配目标</span>
+              </label>
+              <select class="form-select" id="input-channel">
+                <option value="智驾云·车机正式版">智驾云·车机正式版</option>
+                <option value="智驾云·研发测试版">智驾云·研发测试版</option>
+                <option value="AOT·座舱互联尝鲜版">AOT·座舱互联尝鲜版</option>
+                <option value="内部联调专用">内部联调专用</option>
+              </select>
+            </div>
+
+            <div class="form-group full-width">
+              <label class="form-label">
+                <span>邮件通知抄送收件人 (多邮箱以英文逗号隔开)</span>
+              </label>
+              <input type="text" class="form-input" id="input-recipients" placeholder="qa@zhijiayun.com, dev@zhijiayun.com">
+            </div>
+
+            <div class="form-group full-width">
+              <label class="form-label">
+                <span>📝 版本更新日志与说明 (将自动渲染进邮件通知)</span>
+              </label>
+              <textarea class="form-textarea" id="input-changelog" placeholder="例如：
+1. 优化 AOT 座舱协议通信延迟
+2. 修复地图渲染偶发黑屏问题
+3. 升级底层音频流编解码驱动"></textarea>
+            </div>
+          </div>
+
+          <!-- Progress -->
+          <div class="progress-container" id="upload-progress-container">
+            <div class="progress-bar" id="upload-progress-bar"></div>
+          </div>
+          <div class="progress-status-text" id="progress-status-text">正在上传文件并生成 release 包...</div>
+
+          <!-- Action Row -->
+          <div class="action-row">
+            <div style="font-size: 13px; color: var(--slate-500);">
+              💡 规则提示：包名将严格按 <strong>release-数字</strong> (如 1, 2, 3...) 递增生成，并自动派发发布邮件。
+            </div>
+            <button type="submit" class="btn-primary" id="btn-submit-upload">
+              <span>🚀 推送并自动生成 Release 包</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- TAB 2: Release Packages List (形式 2) -->
+    <div id="tab-releases" class="tab-pane" style="display: none;">
+      <div class="list-section">
+        <div class="list-header">
+          <div class="card-title">
+            <span>📋 Release 包列表 (形式 2：每次推送自动打成 Release 包)</span>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <div class="search-box">
+              <span>🔍</span>
+              <input type="text" id="search-release-input" placeholder="搜索 Release 包名、版本或日志...">
+            </div>
+            <button class="btn-action" id="btn-refresh-releases">🔄 刷新</button>
+          </div>
+        </div>
+
+        <div class="table-wrapper">
+          <table class="release-table">
+            <thead>
+              <tr>
+                <th>Release 编号</th>
+                <th>应用版本 / 渠道</th>
+                <th>原始 APK / 大小</th>
+                <th>MD5 完整性校验</th>
+                <th>打包时间</th>
+                <th>邮件通知状态</th>
+                <th style="text-align: right;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="release-table-body">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+        </div>
+
+        <div class="empty-state" id="releases-empty-state" style="display: none;">
+          <div class="empty-state-icon">📭</div>
+          <p style="font-weight: 600; color: var(--slate-700);">暂无任何 Release 包</p>
+          <p style="font-size: 13px; margin-top: 4px;">请前往【推送打包】上传您的第一个 APK 文件</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Email Notification Center (形式 1) -->
+    <div id="tab-emails" class="tab-pane" style="display: none;">
+      <div class="list-section">
+        <div class="card-header">
+          <div class="card-title">
+            <span>✉️ 邮件通知中心 (形式 1：每次更新后邮件通知功能)</span>
+          </div>
+          <button class="btn-action" id="btn-save-email-settings">💾 保存邮件配置</button>
+        </div>
+
+        <!-- Email Settings Card -->
+        <div style="background: var(--slate-50); border: 1px solid var(--slate-200); border-radius: var(--radius-md); padding: 18px; margin-bottom: 24px;">
+          <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--slate-800);">⚙️ 自动通知触发规则设置</div>
+          <div class="form-grid" style="margin-top: 0;">
+            <div class="form-group">
+              <label class="form-label">发件人显示名称</label>
+              <input type="text" class="form-input" id="setting-sender-name" value="智驾云 AOT 持续集成发布中心">
+            </div>
+            <div class="form-group">
+              <label class="form-label">发件人邮箱</label>
+              <input type="text" class="form-input" id="setting-sender-email" value="release-bot@zhijiayun.com">
+            </div>
+            <div class="form-group full-width">
+              <label class="form-label">默认抄送收件人组 (英文逗号隔开)</label>
+              <input type="text" class="form-input" id="setting-default-recipients" value="qa-team@zhijiayun.com, dev-leads@zhijiayun.com, pm@zhijiayun.com">
+            </div>
+            <div class="form-group full-width">
+              <label class="form-label">邮件主题模板</label>
+              <input type="text" class="form-input" id="setting-subject-template" value="【智驾云/AOT】新版本发布通知 - {{releaseName}}">
+            </div>
+          </div>
+        </div>
+
+        <!-- Email Logs Table -->
+        <div style="font-size: 15px; font-weight: 700; margin-bottom: 12px; color: var(--slate-900);">📜 历史邮件通知推送记录</div>
+        <div id="email-logs-container">
+          <!-- Rendered via JS -->
+        </div>
+      </div>
+    <!-- TAB 4: GitHub Release 规范发布 -->
+    <div id="tab-github" class="tab-pane" style="display: none;">
+      <div class="upload-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>🚀 自动化 GitHub Release 发布 (严格对齐第三方 4 大发布约定)</span>
+          </div>
+          <div class="next-badge" style="background: #f0fdf4; border-color: #86efac; color: #166534;">
+            <span>规范要求：Tag vX.Y.Z = versionName</span>
+          </div>
+        </div>
+
+        <!-- 规范约束提示卡片 -->
+        <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px; color: #1e40af; line-height: 1.6;">
+          <div style="font-weight: 700; margin-bottom: 4px;">📋 接入与发布约定速查：</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <div>🏷️ <strong>Tag</strong>：必须为 <code>vX.Y.Z</code>，且与 APK 的 <code>versionName</code> 保持一致</div>
+            <div>📦 <strong>Asset</strong>：附件必须含 <code>.apk</code>，推荐 <code>{packageName}-{version}.apk</code></div>
+            <div>🚀 <strong>Latest</strong>：正式版标 <code>Latest</code>；测试版标 <code>pre-release</code> 严禁标 Latest</div>
+            <div>📝 <strong>说明</strong>：日志写入 <code>body</code>，直接展示在门市更新对话框中</div>
+          </div>
+        </div>
+
+        <form id="gh-release-form">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">
+                <span>GitHub 公开仓库 (owner/repo)</span>
+              </label>
+              <input type="text" class="form-input" id="gh-input-repo" value="ZJaCloud/aot-release-apk" required>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <span>Android packageName (applicationId)</span>
+              </label>
+              <input type="text" class="form-input" id="gh-input-package" value="com.zhijiayun.aot" required>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <span>版本号 (Version Name)</span>
+              </label>
+              <input type="text" class="form-input" id="gh-input-version" placeholder="例如：1.0.0 (将自动对齐 Tag: v1.0.0)" required>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <span>门市 App 显示名称</span>
+              </label>
+              <input type="text" class="form-input" id="gh-input-appname" value="智驾云 AOT 客户端">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <span>发布类型 (Latest / Pre-release)</span>
+              </label>
+              <select class="form-select" id="gh-input-type">
+                <option value="latest">🚀 生产正式版 (Mark as Latest)</option>
+                <option value="prerelease">🧪 研发测试版 (Pre-release，不标 Latest)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <span>预期 APK 资产产物命名</span>
+              </label>
+              <input type="text" class="form-input" id="gh-display-asset-name" value="com.zhijiayun.aot-v1.0.0.apk" readonly style="background: #f8fafc; color: #475569;">
+            </div>
+
+            <div class="form-group full-width">
+              <label class="form-label">
+                <span>GitHub Token (可选，未输入则以 Dry-run 演练模式运行)</span>
+              </label>
+              <input type="password" class="form-input" id="gh-input-token" placeholder="留空或输入 dry-run 将进行全套规范模拟校验">
+            </div>
+
+            <div class="form-group full-width">
+              <label class="form-label">
+                <span>📝 版本更新说明 (Release Body - 将直接展示在门市更新对话框中)</span>
+              </label>
+              <textarea class="form-textarea" id="gh-input-changelog" placeholder="1. 适配门市云端 App 下载平滑覆盖更新
+2. 优化 AOT 座舱协议通信稳定性
+3. 修复已知异常"></textarea>
+            </div>
+          </div>
+
+          <!-- APK File Dropzone -->
+          <div class="dropzone" id="gh-apk-dropzone" style="margin-top: 10px;">
+            <input type="file" id="gh-apk-file-input" accept=".apk">
+            <div class="drop-icon">📱</div>
+            <div class="drop-text" id="gh-drop-text">拖拽最新 .apk 安装包至此处，或点击浏览选择 (未选择将使用 sample-debug.apk 演练)</div>
+          </div>
+
+          <div class="action-row" style="margin-top: 20px;">
+            <div style="font-size: 13px; color: var(--slate-500);">
+              💡 门市「云端 App 下载」与 Monitor 将自动识别该 Release 并提供覆盖安装。
+            </div>
+            <div style="display: flex; gap: 10px;">
+              <button type="button" class="btn-action" id="btn-gh-dryrun">🔍 本地 Dry-run 模拟校验</button>
+              <button type="submit" class="btn-primary" id="btn-gh-submit">🚀 发布到 GitHub Release</button>
+            </div>
+          </div>
+        </form>
+
+        <!-- GitHub Release Result Box -->
+        <div id="gh-release-result" style="display: none; margin-top: 24px; padding: 18px; border-radius: 8px; border: 1px solid #cbd5e1; background: #f8fafc;">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: Monitor 检查更新 (模拟门市云端 App 下载) -->
+    <div id="tab-monitor" class="tab-pane" style="display: none;">
+      <div class="list-section">
+        <div class="card-header">
+          <div class="card-title">
+            <span>🔍 门市「云端 App 下载」更新检测器 (Monitor 模拟器)</span>
+          </div>
+          <button class="btn-action" id="btn-monitor-check">🔄 立即检查更新</button>
+        </div>
+
+        <div style="background: var(--slate-50); border: 1px solid var(--slate-200); border-radius: var(--radius-md); padding: 18px; margin-bottom: 24px;">
+          <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--slate-800);">📱 设备当前运行环境设置</div>
+          <div class="form-grid" style="margin-top: 0;">
+            <div class="form-group">
+              <label class="form-label">监控目标仓库 (GitHub Repo)</label>
+              <input type="text" class="form-input" id="monitor-input-repo" value="ZJaCloud/aot-release-apk">
+            </div>
+            <div class="form-group">
+              <label class="form-label">门市终端当前已安装版本号</label>
+              <input type="text" class="form-input" id="monitor-input-current-ver" value="v1.0.0" placeholder="例如: v1.0.0">
+            </div>
+          </div>
+        </div>
+
+        <div style="font-size: 15px; font-weight: 700; margin-bottom: 12px; color: var(--slate-900);">📱 门市端更新对话框实时预览</div>
+        <div id="monitor-display-area" style="min-height: 200px; display: flex; align-items: center; justify-content: center; background: #fff; border: 2px dashed #cbd5e1; border-radius: 12px; padding: 24px;">
+          <div style="text-align: center; color: var(--slate-500);">
+            <div style="font-size: 32px; margin-bottom: 8px;">📡</div>
+            <div>点击上方【立即检查更新】，模拟 Monitor 向 GitHub 查询最新正式版并拉取更新对话框</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Modal: Email Notification Preview (形式 1 详情) -->
+  <div class="modal-overlay" id="email-preview-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span>✉️ 邮件通知预览与投递详情</span>
+          <span class="badge-pill" id="modal-release-name" style="background: #eff6ff; color: #2563eb; font-size: 12px; padding: 2px 8px; border-radius: 9999px;">release-1</span>
+        </div>
+        <button class="btn-close-modal" id="btn-close-email-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom: 14px; font-size: 13px; color: var(--slate-600); display: flex; flex-direction: column; gap: 4px;">
+          <div><strong>邮件主题：</strong><span id="modal-email-subject">【智驾云/AOT】新版本发布通知 - release-1</span></div>
+          <div><strong>收件人列表：</strong><span id="modal-email-recipients">qa-team@zhijiayun.com</span></div>
+          <div><strong>派发时间：</strong><span id="modal-email-time">2026-10-15 22:50:00</span></div>
+        </div>
+        <div class="email-preview-frame">
+          <iframe id="modal-email-iframe" style="width: 100%; min-height: 400px; border: none; background: #fff; border-radius: 8px;"></iframe>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-action" id="btn-copy-email-html">📋 复制邮件 HTML</button>
+        <button class="btn-primary" id="btn-resend-current-email">📤 重新推送邮件</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- JS Logic -->
+  <script src="/js/app.js"></script>
+</body>
+</html>

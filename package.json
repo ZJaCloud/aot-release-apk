@@ -1,0 +1,22 @@
+{
+  "name": "aot-release-apk",
+  "version": "1.0.0",
+  "description": "AOT APK 上传与自动 Release 打包及邮件通知系统",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node test/test-engine.js && node test/test-github-release.js",
+    "test:spec": "node test/test-github-release.js",
+    "release": "node scripts/publish-release.js"
+  },
+  "keywords": [
+    "apk",
+    "release",
+    "uploader",
+    "email-notification"
+  ],
+  "author": "zhijiayun",
+  "license": "ISC"
+}
