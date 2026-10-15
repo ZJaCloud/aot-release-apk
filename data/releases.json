@@ -1,6 +1,32 @@
 {
-  "nextId": 5,
+  "nextId": 6,
   "releases": [
+    {
+      "id": 5,
+      "releaseName": "release-5",
+      "version": "v2.14.5",
+      "gitTag": "v2.14.5",
+      "packageName": "com.zhijiayun.aot",
+      "repo": "ZJaCloud/aot-release-apk",
+      "originalFileName": "restaurant_desktop_V2.14.5_b20261015101820.apk",
+      "storedFileName": "release-5.apk",
+      "filePath": "/Users/jinmokai/work/zhijiayun/aot-relase-apk/data/uploads/release-5/release-5.apk",
+      "fileSize": 63520521,
+      "fileSizeFormatted": "60.58 MB",
+      "md5": "0721ea07c100dca907fd744030f14ab0",
+      "channel": "智驾云·车机正式版",
+      "changelog": "日常构建更新，性能优化与稳定性提升",
+      "recipients": [
+        "qa-team@zhijiayun.com",
+        "dev-leads@zhijiayun.com",
+        "pm@zhijiayun.com"
+      ],
+      "downloadUrl": "http://localhost:3000/api/releases/5/download",
+      "createdAt": "2026-10-15T15:52:11.469Z",
+      "status": "ready",
+      "emailStatus": "skipped",
+      "emailNotification": null
+    },
     {
       "id": 4,
       "releaseName": "release-4",
@@ -208,8 +234,8 @@
   ],
   "githubSettings": {
     "repo": "ZJaCloud/aot-release-apk",
-    "packageName": "com.zhijiayun.aot",
-    "appName": "智驾云 AOT 客户端",
-    "token": ""
+    "packageName": "com.sunmi.sm3xr4ap.restaurant_desktop",
+    "appName": "TPOS 客户端",
+    "token": "SHA256:msJ2IKOLIpIv5kj/xG2DsIdDr++07wGyjk6h4e76l0Q"
   }
 }
