@@ -31,13 +31,24 @@
 
 ---
 
-## 3. 门市更新对话框展示机制
+## 3. TPOS 版本判定与门市更新机制
 
-当门市设备在「云端 App 下载」触发更新检查时：
-1. **Monitor 监控引擎** 调用 `https://api.github.com/repos/{owner}/{repo}/releases/latest`；
-2. 提取 `tag_name` 与当前设备已安装版本的 `versionName` 进行比较；
-3. 若有更新，弹窗直接拉取并展示 Release `body` 中的更新日志；
-4. 点击【立即升级】后，自动下载指定的 APK Asset 并调起 Android 系统的覆盖安装。
+### 怎么判断版本号
+1. **装置上已安装的 TPOS**：
+   - 读取 `packageName = com.sunmi.sm3xr4ap.restaurant_desktop` 的 `versionName`（系统 `PackageManager`）。
+2. **GitHub 上的最新版**：
+   - 接口请求：`https://api.github.com/repos/ZJaCloud/aot-release-apk/releases/latest`
+   - 用 Release 的 **`tag_name`** 当作远端版本（会去掉前面的 `v` / `V`），例如 tag `V2.14.5` -> 当成 `2.14.5`。
+3. **版本比对规则**：
+   - **语义化比对**：远端版本 > 已安装版本 -> 弹窗提示是否更新 / 安装；
+   - **若设备还未安装 TPOS**：只要存在 `latest` 正式版，就直接提示安装。
+
+### 跟文件名的关系对照表
+| 来源 | 用途 |
+|---|---|
+| **Release tag（如 `v2.14.5` / `V2.14.5`）** | **用来判断版本**（作为远端真实版本依据） |
+| **Release 里的 `.apk asset`** | **用来下载安装**（门市拉取该资产进行安装） |
+| **APK 档名本身** | **不拿来比版本**（文件名带什么格式皆不影响版本判定） |
 
 ---
 

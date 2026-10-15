@@ -7,6 +7,7 @@ import {
   formatReleaseBody,
   createGitHubRelease,
   checkLatestRelease,
+  compareSemver,
   DEFAULT_REPO,
   DEFAULT_PACKAGE_NAME
 } from '../services/githubReleaseService.js';
@@ -217,12 +218,23 @@ async function runSpecTests() {
   assert(betaReleaseResult.release.isLatest === false, '测试版 isLatest 为 false');
   assert(betaReleaseResult.release.payload.make_latest === "false", 'API Payload make_latest 严格为 "false"');
 
+  // -------------------------------------------------------------
+  // 测试 8: 语义化版本比对与 TPOS 门市判定规则
+  // -------------------------------------------------------------
+  console.log('\n▶️ [测试组 8] 校验 TPOS 门市版本语义化比对规则...');
+  assert(compareSemver('V2.14.5', '2.14.4') === 1, 'Tag V2.14.5 > 已安装 2.14.4 判定为需更新');
+  assert(compareSemver('v2.14.5', '2.14.5') === 0, 'Tag v2.14.5 == 已安装 2.14.5 判定为已是最新');
+  assert(compareSemver('2.14.5', '2.15.0') === -1, 'Tag 2.14.5 < 已安装 2.15.0 判定无需更新');
+  assert(compareSemver('v2.14.10', 'v2.14.5') === 1, 'Semver 补丁版本号 10 > 5 正确按数值比对');
+  assert(compareSemver('V2.14.5', '') === 1, '未安装状态下，只要有最新版本即提示安装');
+
   console.log('\n================================================================');
   console.log(`🎉 全部 ${passedTests}/${totalTests} 个测试用例通过 (100% PASS)！`);
   console.log('   ✓ Tag: vX.Y.Z 且与 APK versionName 保持一致');
   console.log('   ✓ Asset: Release 附带至少一个 .apk (推荐 {packageName}-{version}.apk)');
   console.log('   ✓ Latest: 正式版才标 Latest，测试版标 pre-release 严禁标 Latest');
   console.log('   ✓ Release 说明: 写入 body，兼容更新对话框');
+  console.log('   ✓ TPOS 判定: 语义化比对 (tag 决定版本，.apk 决定下载，文件名不影响)');
   console.log('================================================================\n');
 }
 

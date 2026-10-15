@@ -287,21 +287,21 @@
               <label class="form-label">
                 <span>Android packageName (applicationId)</span>
               </label>
-              <input type="text" class="form-input" id="gh-input-package" value="com.zhijiayun.aot" required>
+              <input type="text" class="form-input" id="gh-input-package" value="com.sunmi.sm3xr4ap.restaurant_desktop" required>
             </div>
 
             <div class="form-group">
               <label class="form-label">
                 <span>版本号 (Version Name)</span>
               </label>
-              <input type="text" class="form-input" id="gh-input-version" placeholder="例如：1.0.0 (将自动对齐 Tag: v1.0.0)" required>
+              <input type="text" class="form-input" id="gh-input-version" placeholder="例如：2.14.5 (将自动对齐 Tag: v2.14.5)" required>
             </div>
 
             <div class="form-group">
               <label class="form-label">
                 <span>门市 App 显示名称</span>
               </label>
-              <input type="text" class="form-input" id="gh-input-appname" value="智驾云 AOT 客户端">
+              <input type="text" class="form-input" id="gh-input-appname" value="TPOS 餐厅收银桌面端">
             </div>
 
             <div class="form-group">
@@ -374,15 +374,15 @@
         </div>
 
         <div style="background: var(--slate-50); border: 1px solid var(--slate-200); border-radius: var(--radius-md); padding: 18px; margin-bottom: 24px;">
-          <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--slate-800);">📱 设备当前运行环境设置</div>
+          <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--slate-800);">📱 设备当前运行环境设置 (TPOS 门市判断机制)</div>
           <div class="form-grid" style="margin-top: 0;">
             <div class="form-group">
               <label class="form-label">监控目标仓库 (GitHub Repo)</label>
               <input type="text" class="form-input" id="monitor-input-repo" value="ZJaCloud/aot-release-apk">
             </div>
             <div class="form-group">
-              <label class="form-label">门市终端当前已安装版本号</label>
-              <input type="text" class="form-input" id="monitor-input-current-ver" value="v1.0.0" placeholder="例如: v1.0.0">
+              <label class="form-label">门市设备已安装版本号 (PackageManager 读取 versionName)</label>
+              <input type="text" class="form-input" id="monitor-input-current-ver" value="v2.14.4" placeholder="例如: 2.14.4 (留空模拟未安装状态)">
             </div>
           </div>
         </div>
