@@ -418,20 +418,26 @@ window.syncReleaseToGitHub = async (id, tagName) => {
     const cfgData = await cfgRes.json();
     if (!cfgData.data?.hasToken) {
       token = prompt('【自动化发版一次性配置】\n请输入您的 GitHub Personal Access Token：\n(可在 GitHub -> Settings -> Developer Settings -> Personal Access Tokens 中生成，需勾选 repo 权限)');
-      if (!token || !token.trim()) {
-        showToast('需要提供 GitHub Token 才能调用线上 Release 接口', 'error');
+      const rawToken = token.trim();
+      if (rawToken.startsWith('SHA256:') || rawToken.startsWith('ssh-') || rawToken.includes('id_rsa') || rawToken.includes('id_ed25519')) {
+        alert('❌ 您输入的是 SSH 密钥指纹 (以 SHA256: 开头)，并非 GitHub Personal Access Token！\n\n正确的 GitHub Token 通常是以 ghp_ 开头的 40 位密钥。\n请在浏览器打开 https://github.com/settings/tokens/new 生成 (务必勾选 repo 权限)。');
         return;
       }
-      await fetch('/api/github/config', {
+      const saveResp = await fetch('/api/github/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           repo: 'ZJaCloud/aot-release-apk',
           packageName: 'com.sunmi.sm3xr4ap.restaurant_desktop',
           appName: 'TPOS 客户端',
-          token: token.trim()
+          token: rawToken
         })
       });
+      const saveRes = await saveResp.json();
+      if (saveRes.code !== 0) {
+        alert(saveRes.message);
+        return;
+      }
       showToast('GitHub Token 已持久化保存！', 'success');
       updateGitHubTokenStatusBadge();
     }
@@ -482,19 +488,29 @@ if (btnQuickConfigToken) {
   btnQuickConfigToken.addEventListener('click', async () => {
     const token = prompt('请输入您的 GitHub Personal Access Token (需勾选 repo 权限)：');
     if (!token || !token.trim()) return;
+    const rawToken = token.trim();
+    if (rawToken.startsWith('SHA256:') || rawToken.startsWith('ssh-') || rawToken.includes('id_rsa') || rawToken.includes('id_ed25519')) {
+      alert('❌ 您输入的是 SSH 密钥指纹 (以 SHA256: 开头)，并非 GitHub Personal Access Token！\n\n正确的 GitHub Token 通常是以 ghp_ 开头的 40 位密钥。\n请在浏览器打开 https://github.com/settings/tokens/new 生成 (务必勾选 repo 权限)。');
+      return;
+    }
     try {
-      await fetch('/api/github/config', {
+      const res = await fetch('/api/github/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           repo: 'ZJaCloud/aot-release-apk',
           packageName: 'com.sunmi.sm3xr4ap.restaurant_desktop',
           appName: 'TPOS 客户端',
-          token: token.trim()
+          token: rawToken
         })
       });
-      showToast('GitHub Token 配置成功并已持久化保存！', 'success');
-      updateGitHubTokenStatusBadge();
+      const data = await res.json();
+      if (data.code === 0) {
+        showToast('GitHub Token 配置成功并已持久化保存！', 'success');
+        updateGitHubTokenStatusBadge();
+      } else {
+        alert(data.message);
+      }
     } catch (e) {
       showToast('保存 Token 异常', 'error');
     }

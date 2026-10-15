@@ -564,7 +564,15 @@ const server = http.createServer(async (req, res) => {
             appName: payload.appName || '智驾云 AOT 客户端'
           };
           if (payload.token !== undefined && payload.token !== 'ghp_••••••••••••••••') {
-            store.githubSettings.token = payload.token.trim();
+            const rawToken = payload.token.trim();
+            if (rawToken.startsWith('SHA256:') || rawToken.startsWith('ssh-') || rawToken.includes('id_rsa') || rawToken.includes('id_ed25519')) {
+              res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+              return res.end(JSON.stringify({
+                code: 400,
+                message: '❌ 您输入的是 SSH 密钥指纹 (以 SHA256: 开头)，并非 GitHub Personal Access Token！\n正确的 GitHub Token 通常以 ghp_ 开头。\n请访问 https://github.com/settings/tokens/new 生成并勾选 repo 权限。'
+              }));
+            }
+            store.githubSettings.token = rawToken;
           }
           saveStore(store);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
