@@ -390,6 +390,9 @@ function renderReleaseTable(releases) {
         </td>
         <td style="text-align: right;">
           <div class="actions-cell" style="justify-content: flex-end;">
+            <button class="btn-action" style="background: #2563eb; color: #fff; border-color: #2563eb; font-weight: 600;" onclick="syncReleaseToGitHub(${item.id}, '${item.gitTag || item.releaseName}')" title="自动创建 GitHub Release 并上传 60MB APK 附件至 releases/latest">
+              <span>🚀 同步至 GitHub</span>
+            </button>
             <a href="/api/releases/${item.id}/download" class="btn-action download" title="直接下载该 APK 包">
               <span>📥 下载</span>
             </a>
@@ -404,6 +407,98 @@ function renderReleaseTable(releases) {
       </tr>
     `;
   }).join('');
+}
+
+// ==================== SYNC RELEASE TO GITHUB ====================
+window.syncReleaseToGitHub = async (id, tagName) => {
+  // Check if token exists
+  let token = '';
+  try {
+    const cfgRes = await fetch('/api/github/config');
+    const cfgData = await cfgRes.json();
+    if (!cfgData.data?.hasToken) {
+      token = prompt('【自动化发版一次性配置】\n请输入您的 GitHub Personal Access Token：\n(可在 GitHub -> Settings -> Developer Settings -> Personal Access Tokens 中生成，需勾选 repo 权限)');
+      if (!token || !token.trim()) {
+        showToast('需要提供 GitHub Token 才能调用线上 Release 接口', 'error');
+        return;
+      }
+      await fetch('/api/github/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: 'ZJaCloud/aot-release-apk',
+          packageName: 'com.sunmi.sm3xr4ap.restaurant_desktop',
+          appName: 'TPOS 客户端',
+          token: token.trim()
+        })
+      });
+      showToast('GitHub Token 已持久化保存！', 'success');
+      updateGitHubTokenStatusBadge();
+    }
+  } catch (_) {}
+
+  showToast(`正在自动创建 Release ${tagName} 并上传 60MB APK 附件至 releases/latest，请稍候...`, 'info');
+
+  try {
+    const res = await fetch(`/api/releases/${id}/sync-github`, { method: 'POST' });
+    const result = await res.json();
+    if (result.code === 0) {
+      showToast('🎉 GitHub Release 发布成功！', 'success');
+      alert(`🎉 恭喜！版本 ${tagName} 已正式上线至 GitHub Release！\n\n• 目标仓库: ${result.data?.release?.repo}\n• Asset 产物: ${result.data?.release?.asset?.name}\n• 门市直链: ${result.data?.release?.asset?.downloadUrl}\n• 状态: Latest (正式版)\n\n现在第三方门市 App 调用 releases/latest 接口即可立即检测到新版并开始下载！`);
+      fetchReleases();
+    } else {
+      showToast(`同步失败: ${result.message}`, 'error');
+      alert(`❌ 同步失败: ${result.message}`);
+    }
+  } catch (err) {
+    showToast(`网络请求异常: ${err.message}`, 'error');
+  }
+};
+
+async function updateGitHubTokenStatusBadge() {
+  const badge = document.getElementById('gh-token-status-badge');
+  const btn = document.getElementById('btn-quick-config-token');
+  if (!badge) return;
+
+  try {
+    const res = await fetch('/api/github/config');
+    const result = await res.json();
+    if (result.data?.hasToken) {
+      badge.textContent = '✅ 已激活自动化发版';
+      badge.style.background = '#dcfce7';
+      badge.style.color = '#15803d';
+      if (btn) btn.textContent = '🔑 更新 GitHub Token';
+    } else {
+      badge.textContent = '⚠️ 未配置 Token (仅推 Git Tag)';
+      badge.style.background = '#fef3c7';
+      badge.style.color = '#92400e';
+      if (btn) btn.textContent = '🔑 配置 GitHub Token';
+    }
+  } catch (_) {}
+}
+
+const btnQuickConfigToken = document.getElementById('btn-quick-config-token');
+if (btnQuickConfigToken) {
+  btnQuickConfigToken.addEventListener('click', async () => {
+    const token = prompt('请输入您的 GitHub Personal Access Token (需勾选 repo 权限)：');
+    if (!token || !token.trim()) return;
+    try {
+      await fetch('/api/github/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: 'ZJaCloud/aot-release-apk',
+          packageName: 'com.sunmi.sm3xr4ap.restaurant_desktop',
+          appName: 'TPOS 客户端',
+          token: token.trim()
+        })
+      });
+      showToast('GitHub Token 配置成功并已持久化保存！', 'success');
+      updateGitHubTokenStatusBadge();
+    } catch (e) {
+      showToast('保存 Token 异常', 'error');
+    }
+  });
 }
 
 function truncate(str, maxLen) {
@@ -631,6 +726,7 @@ function escapeHtml(str) {
 
 // Initial Load
 fetchReleases();
+updateGitHubTokenStatusBadge();
 
 // ==================== GITHUB RELEASE & MONITOR LOGIC ====================
 const ghInputPackage = document.getElementById('gh-input-package');

@@ -256,15 +256,51 @@ export async function createGitHubRelease(options) {
     body: JSON.stringify(releasePayload)
   });
 
-  if (!createResp.ok) {
+  let releaseData = null;
+  let releaseId = null;
+
+  if (createResp.ok) {
+    releaseData = await createResp.json();
+    releaseId = releaseData.id;
+  } else if (createResp.status === 422) {
+    // Release 可能已经存在于该 Tag，尝试直接获取已存在的 Release
+    const getUrl = `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(effectiveTag)}`;
+    const getResp = await fetch(getUrl, { headers });
+    if (getResp.ok) {
+      releaseData = await getResp.json();
+      releaseId = releaseData.id;
+      // 更新其 body 和 latest 状态
+      await fetch(`https://api.github.com/repos/${repo}/releases/${releaseId}`, {
+        method: 'PATCH',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(releasePayload)
+      });
+    } else {
+      const errorText = await createResp.text();
+      throw new Error(`GitHub 创建 Release 失败 (${createResp.status}): ${errorText}`);
+    }
+  } else {
     const errorText = await createResp.text();
     throw new Error(`GitHub 创建 Release 失败 (${createResp.status}): ${errorText}`);
   }
 
-  const releaseData = await createResp.json();
-  const releaseId = releaseData.id;
+  // 2. 检查并删除已存在的同名 Asset (避免 422 already_exists)
+  const listAssetsUrl = `https://api.github.com/repos/${repo}/releases/${releaseId}/assets`;
+  try {
+    const assetsResp = await fetch(listAssetsUrl, { headers });
+    if (assetsResp.ok) {
+      const existingAssets = await assetsResp.json();
+      const duplicateAsset = existingAssets.find(a => a.name === targetAssetName);
+      if (duplicateAsset) {
+        await fetch(`https://api.github.com/repos/${repo}/releases/assets/${duplicateAsset.id}`, {
+          method: 'DELETE',
+          headers
+        });
+      }
+    }
+  } catch (_) {}
 
-  // 2. 上传 Asset APK
+  // 3. 上传 Asset APK
   const uploadUrl = `https://uploads.github.com/repos/${repo}/releases/${releaseId}/assets?name=${encodeURIComponent(targetAssetName)}`;
   const uploadResp = await fetch(uploadUrl, {
     method: 'POST',

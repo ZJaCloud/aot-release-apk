@@ -83,6 +83,18 @@
         </div>
 
         <form id="upload-form">
+          <!-- GitHub Release 自动化配置卡片 -->
+          <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+            <div style="font-size: 13px; color: #1e40af;">
+              <strong>🤖 GitHub 自动化发版：</strong>
+              <span id="gh-token-status-badge" style="background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 4px; font-weight: 600;">未配置 Token</span>
+              <span style="margin-left: 8px; color: #475569; font-size: 12px;">配置一次 Token 后，发版将全自动创建 GitHub Release 并上传 60MB APK 附件至 releases/latest。</span>
+            </div>
+            <button type="button" class="btn-action" id="btn-quick-config-token" style="white-space: nowrap; font-weight: 600; background: #2563eb; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer;">
+              🔑 配置 GitHub Token
+            </button>
+          </div>
+
           <!-- Dropzone -->
           <div class="dropzone" id="apk-dropzone">
             <input type="file" id="apk-file-input" accept=".apk">

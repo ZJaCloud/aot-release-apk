@@ -195,13 +195,44 @@ const server = http.createServer(async (req, res) => {
           console.warn('[Git SSH push]:', gitErr.message);
         }
 
-        console.log(`[Release Engine] 成功生成 ${release.gitTag || release.releaseName} (${release.fileSizeFormatted}) - Git状态: ${release.gitPushStatus || 'ready'}`);
+        // 自动创建 GitHub Release 并上传 APK Asset (若已配置 GitHub Token)
+        let ghResult = null;
+        const currentStore = getStore();
+        const ghToken = process.env.GITHUB_TOKEN || currentStore.githubSettings?.token || '';
+        if (ghToken) {
+          try {
+            console.log(`[GitHub Release] 正在自动发布 ${release.gitTag} 至 GitHub Release 并上传 Asset...`);
+            ghResult = await createGitHubRelease({
+              repo: currentStore.githubSettings?.repo || DEFAULT_REPO,
+              tag: release.gitTag,
+              versionName: release.version,
+              packageName: currentStore.githubSettings?.packageName || DEFAULT_PACKAGE_NAME,
+              appName: currentStore.githubSettings?.appName || 'TPOS 客户端',
+              changelog: release.changelog,
+              apkFilePath: release.filePath,
+              token: ghToken,
+              isLatest: true,
+              isPrerelease: false
+            });
+            release.githubRelease = ghResult.release;
+            release.githubStatus = 'published';
+            saveStore(currentStore);
+            console.log(`[GitHub Release] 自动发布成功: ${ghResult.release.htmlUrl}`);
+          } catch (ghErr) {
+            console.warn('[GitHub Release 自动发布异常]:', ghErr.message);
+            release.githubStatus = 'failed';
+            release.githubError = ghErr.message;
+            saveStore(currentStore);
+          }
+        }
+
+        console.log(`[Release Engine] 成功生成 ${release.gitTag || release.releaseName} (${release.fileSizeFormatted}) - Git状态: ${release.gitPushStatus || 'ready'} - GitHub状态: ${release.githubStatus || 'pending'}`);
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         return res.end(JSON.stringify({
           code: 0,
-          message: `成功生成发布包 ${release.gitTag || release.releaseName}${gitResult ? ' (' + gitResult.message + ')' : ''}`,
-          data: { release, emailRecord, gitResult }
+          message: `成功生成发布包 ${release.gitTag || release.releaseName}${gitResult ? ' (' + gitResult.message + ')' : ''}${ghResult ? ' 且已成功发布至 GitHub Release！' : ''}`,
+          data: { release, emailRecord, gitResult, ghResult }
         }));
       } catch (err) {
         console.error('Error processing upload:', err);
@@ -265,6 +296,59 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ code: 404, message: err.message }));
+    }
+  }
+
+  // 5.1 POST /api/releases/:id/sync-github: 同步指定发布包至 GitHub Release 并上传附件
+  const syncMatch = pathname.match(/^\/api\/releases\/(\d+)\/sync-github$/);
+  if (syncMatch && method === 'POST') {
+    const releaseId = parseInt(syncMatch[1], 10);
+    const store = getStore();
+    const release = store.releases.find(r => r.id === releaseId);
+    if (!release) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ code: 404, message: '未找到该 Release' }));
+    }
+
+    const ghToken = process.env.GITHUB_TOKEN || store.githubSettings?.token || '';
+    if (!ghToken) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({
+        code: 400,
+        message: '未配置 GitHub Token，请先在配置中填入您的 GitHub Personal Access Token (需勾选 repo 权限)'
+      }));
+    }
+
+    try {
+      const ghResult = await createGitHubRelease({
+        repo: store.githubSettings?.repo || DEFAULT_REPO,
+        tag: release.gitTag || `v${(release.version || '1.0.0').replace(/^v/, '')}`,
+        versionName: (release.version || '1.0.0').replace(/^v/, ''),
+        packageName: store.githubSettings?.packageName || 'com.sunmi.sm3xr4ap.restaurant_desktop',
+        appName: store.githubSettings?.appName || 'TPOS 客户端',
+        changelog: release.changelog || '日常构建更新，性能优化与稳定性提升',
+        apkFilePath: release.filePath,
+        token: ghToken,
+        isLatest: true,
+        isPrerelease: false
+      });
+
+      release.githubRelease = ghResult.release;
+      release.githubStatus = 'published';
+      saveStore(store);
+
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({
+        code: 0,
+        message: `成功同步 ${release.gitTag || release.releaseName} 至 GitHub Release，Asset 附件已就绪！`,
+        data: ghResult
+      }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({
+        code: 500,
+        message: `同步 GitHub Release 失败: ${err.message}`
+      }));
     }
   }
 
