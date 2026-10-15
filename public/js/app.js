@@ -310,15 +310,15 @@ async function fetchReleases() {
       statEmailCount.textContent = `${emailSentCount} 次`;
 
       // Pre-fill email defaults if not manually edited
-      if (!inputRecipients.value && currentEmailSettings.defaultRecipients) {
+      if (inputRecipients && !inputRecipients.value && currentEmailSettings.defaultRecipients) {
         inputRecipients.value = currentEmailSettings.defaultRecipients;
       }
 
       // Sync settings fields
-      settingSenderName.value = currentEmailSettings.senderName || '';
-      settingSenderEmail.value = currentEmailSettings.senderEmail || '';
-      settingDefaultRecipients.value = currentEmailSettings.defaultRecipients || '';
-      settingSubjectTemplate.value = currentEmailSettings.emailSubjectTemplate || '';
+      if (settingSenderName) settingSenderName.value = currentEmailSettings.senderName || '';
+      if (settingSenderEmail) settingSenderEmail.value = currentEmailSettings.senderEmail || '';
+      if (settingDefaultRecipients) settingDefaultRecipients.value = currentEmailSettings.defaultRecipients || '';
+      if (settingSubjectTemplate) settingSubjectTemplate.value = currentEmailSettings.emailSubjectTemplate || '';
 
       renderReleaseTable(currentReleases);
     }
@@ -328,11 +328,12 @@ async function fetchReleases() {
 }
 
 function renderReleaseTable(releases) {
-  const query = searchReleaseInput.value.trim().toLowerCase();
-  const filtered = releases.filter(r => {
+  if (!releaseTableBody) return;
+  const query = searchReleaseInput ? searchReleaseInput.value.trim().toLowerCase() : '';
+  const filtered = (releases || []).filter(r => {
     if (!query) return true;
     return (
-      r.releaseName.toLowerCase().includes(query) ||
+      (r.releaseName && r.releaseName.toLowerCase().includes(query)) ||
       (r.version && r.version.toLowerCase().includes(query)) ||
       (r.originalFileName && r.originalFileName.toLowerCase().includes(query)) ||
       (r.changelog && r.changelog.toLowerCase().includes(query))
@@ -341,18 +342,20 @@ function renderReleaseTable(releases) {
 
   if (filtered.length === 0) {
     releaseTableBody.innerHTML = '';
-    releasesEmptyState.style.display = 'block';
+    if (releasesEmptyState) releasesEmptyState.style.display = 'block';
     return;
   }
 
-  releasesEmptyState.style.display = 'none';
+  if (releasesEmptyState) releasesEmptyState.style.display = 'none';
 
   releaseTableBody.innerHTML = filtered.map(item => {
-    const timeFormatted = new Date(item.createdAt).toLocaleString('zh-CN', {
+    const timeFormatted = item.createdAt ? new Date(item.createdAt).toLocaleString('zh-CN', {
       month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
-    });
+    }) : '-';
 
     const isEmailSent = item.emailStatus === 'sent';
+    const md5Str = item.md5 || '';
+    const md5Short = md5Str.length > 10 ? `${md5Str.substring(0, 10)}...` : (md5Str || '-');
 
     return `
       <tr>
@@ -372,8 +375,8 @@ function renderReleaseTable(releases) {
         </td>
         <td>
           <div style="display: flex; align-items: center; gap: 4px;">
-            <code style="font-size: 11px; background: var(--slate-100); padding: 2px 6px; border-radius: 4px; color: var(--slate-700);" title="${item.md5}">${item.md5.substring(0, 10)}...</code>
-            <button class="btn-action" style="padding: 2px 6px; font-size: 10px;" onclick="copyText('${item.md5}')" title="复制完整 MD5">📋</button>
+            <code style="font-size: 11px; background: var(--slate-100); padding: 2px 6px; border-radius: 4px; color: var(--slate-700);" title="${md5Str}">${md5Short}</code>
+            <button class="btn-action" style="padding: 2px 6px; font-size: 10px;" onclick="copyText('${md5Str}')" title="复制完整 MD5">📋</button>
           </div>
         </td>
         <td>
