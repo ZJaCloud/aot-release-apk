@@ -521,14 +521,33 @@ const server = http.createServer(async (req, res) => {
 
 export { server };
 
-// 仅在直接执行时监听端口
+// 仅在直接执行时监听端口 (支持 EADDRINUSE 自动切端口与释放提示)
 if (process.argv[1] && process.argv[1].endsWith('server.js')) {
-  server.listen(PORT, () => {
-    console.log(`\n======================================================`);
-    console.log(`🚀 AOT APK Release 服务已启动: http://localhost:${PORT}`);
-    console.log(`📦 Release 命名规则: release-数字 (唯一且自动递增)`);
-    console.log(`📧 邮件通知服务: 每次推送发布自动触发邮件预览与日志`);
-    console.log(`📁 存储目录: ${UPLOADS_DIR}`);
-    console.log(`======================================================\n`);
+  let currentPort = Number(PORT);
+
+  function startServer(port) {
+    server.listen(port, () => {
+      console.log(`\n======================================================`);
+      console.log(`🚀 AOT APK Release 服务已启动: http://localhost:${port}`);
+      console.log(`📦 Release 规范 Tag 与 SSH 远端: git@github.com:ZJaCloud/aot-release-apk.git`);
+      console.log(`📁 存储目录: ${UPLOADS_DIR}`);
+      console.log(`======================================================\n`);
+    });
+  }
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      const nextPort = currentPort + 1;
+      console.warn(`\n⚠️ 端口 ${currentPort} 已被占用（说明您之前启动的 Node 进程仍在运行中）。`);
+      console.log(`💡 若想释放并继续使用端口 ${currentPort}，请在终端执行:`);
+      console.log(`   kill -9 $(lsof -t -i :${currentPort})\n`);
+      console.log(`👉 系统现已自动为您切换到端口 ${nextPort} 启动服务：`);
+      currentPort = nextPort;
+      startServer(nextPort);
+    } else {
+      console.error('服务启动异常:', err);
+    }
   });
+
+  startServer(currentPort);
 }
