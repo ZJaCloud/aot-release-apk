@@ -3,10 +3,36 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 /**
- * 第三方发布规范核心常量与默认值
+ * 第三方发布规范核心常量与默认值 (对齐 TPOS 门市环境)
  */
 export const DEFAULT_REPO = 'ZJaCloud/aot-release-apk';
-export const DEFAULT_PACKAGE_NAME = 'com.zhijiayun.aot';
+export const DEFAULT_PACKAGE_NAME = 'com.sunmi.sm3xr4ap.restaurant_desktop'; // TPOS 真实包名
+export const DEFAULT_APP_NAME = 'TPOS 餐厅收银桌面端';
+
+/**
+ * 语义化版本号比较 (支持 v/V 前缀)
+ * 返回: 1 表示 v1 > v2; -1 表示 v1 < v2; 0 表示相等
+ */
+export function compareSemver(v1, v2) {
+  if (!v1 && !v2) return 0;
+  if (!v1) return -1;
+  if (!v2) return 1;
+
+  const clean1 = String(v1).trim().replace(/^[vV]/, '');
+  const clean2 = String(v2).trim().replace(/^[vV]/, '');
+
+  const parts1 = clean1.split('.').map(x => parseInt(x, 10) || 0);
+  const parts2 = clean2.split('.').map(x => parseInt(x, 10) || 0);
+
+  const len = Math.max(parts1.length, parts2.length);
+  for (let i = 0; i < len; i++) {
+    const p1 = parts1[i] || 0;
+    const p2 = parts2[i] || 0;
+    if (p1 > p2) return 1;
+    if (p1 < p2) return -1;
+  }
+  return 0;
+}
 
 /**
  * 校验发布规范 (严格遵循第三方 4 大发布约定与基础要素)
@@ -286,14 +312,32 @@ export async function createGitHubRelease(options) {
 
 /**
  * 模拟门市 / 车机 Monitor 检查 GitHub 上的最新版本
+ * 判定规范 (参考 TPOS 门市环境)：
+ * 1. 装置上已安装的 TPOS: 读取 packageName = com.sunmi.sm3xr4ap.restaurant_desktop 的 versionName
+ * 2. GitHub 上的最新版: 打 https://api.github.com/repos/ZJaCloud/aot-release-apk/releases/latest
+ *    用 Release 的 tag_name 当远端版本 (去掉前面的 v / V，例如 V2.14.5 -> 2.14.5)
+ * 3. 语义化比对: 远端 > 已安装 -> 提示更新；若还未安装 TPOS -> 只要有 latest 就提示安装
+ * 4. 跟文件名的关系: Tag 决定版本，.apk asset 用于下载安装，文件名本身不拿来比版本
  */
-export async function checkLatestRelease({ repo = DEFAULT_REPO, currentVersion = 'v0.0.0', token = process.env.GITHUB_TOKEN || '' }) {
-  const cleanCurrent = currentVersion.trim().replace(/^v/, '');
+export async function checkLatestRelease({
+  repo = DEFAULT_REPO,
+  currentVersion = '',
+  packageName = DEFAULT_PACKAGE_NAME,
+  token = process.env.GITHUB_TOKEN || ''
+}) {
+  const isInstalled = Boolean(
+    currentVersion &&
+    currentVersion.trim() !== '' &&
+    currentVersion.trim() !== '0' &&
+    currentVersion.trim() !== '未安装' &&
+    currentVersion.trim() !== 'not_installed'
+  );
+  const cleanCurrent = isInstalled ? currentVersion.trim().replace(/^[vV]/, '') : '';
 
   // 构造查询头
   const headers = {
     'Accept': 'application/vnd.github+json',
-    'User-Agent': 'AOT-Monitor/1.0',
+    'User-Agent': 'TPOS-Monitor/1.0',
     'X-GitHub-Api-Version': '2022-11-28'
   };
   if (token && token !== 'dry-run') {
@@ -308,8 +352,10 @@ export async function checkLatestRelease({ repo = DEFAULT_REPO, currentVersion =
       if (resp.status === 404) {
         return {
           repo,
+          packageName,
+          isInstalled,
           hasUpdate: false,
-          currentVersion: `v${cleanCurrent}`,
+          currentVersion: isInstalled ? `v${cleanCurrent}` : '未安装',
           latestTag: null,
           message: `仓库 ${repo} 尚未发布任何标有 Latest 的正式版 Release`
         };
@@ -319,20 +365,27 @@ export async function checkLatestRelease({ repo = DEFAULT_REPO, currentVersion =
 
     const latest = await resp.json();
     const latestTag = latest.tag_name || '';
-    const cleanLatest = latestTag.replace(/^v/, '');
+    const cleanLatest = latestTag.replace(/^[vV]/, ''); // 去除前导 v / V (例如 V2.14.5 -> 2.14.5)
 
-    // 比较版本号
-    const hasUpdate = cleanLatest !== cleanCurrent;
+    // 比较规则:
+    // 1. 若还未安装 TPOS -> 只要有 latest 就提示安装 (actionType = 'INSTALL')
+    // 2. 语义化比对: 远端 > 已安装 -> 提示更新 (actionType = 'UPDATE')
+    const isNewer = !isInstalled || compareSemver(cleanLatest, cleanCurrent) > 0;
+    const hasUpdate = isNewer;
+    const actionType = !isInstalled ? 'INSTALL' : (isNewer ? 'UPDATE' : 'LATEST');
 
-    // 提取 APK asset
+    // 提取 APK asset (跟文件名无关，只要是 .apk 即可用来下载安装)
     const apkAsset = (latest.assets || []).find(a => a.name && a.name.endsWith('.apk')) || null;
 
     return {
       repo,
+      packageName,
+      isInstalled,
       hasUpdate,
-      currentVersion: `v${cleanCurrent}`,
+      actionType,
+      currentVersion: isInstalled ? `v${cleanCurrent}` : '未安装',
       latestTag: latestTag,
-      latestVersion: `v${cleanLatest}`,
+      latestVersion: cleanLatest,
       releaseName: latest.name,
       body: latest.body || '',
       publishedAt: latest.published_at,
@@ -346,8 +399,10 @@ export async function checkLatestRelease({ repo = DEFAULT_REPO, currentVersion =
   } catch (err) {
     return {
       repo,
+      packageName,
+      isInstalled,
       hasUpdate: false,
-      currentVersion: `v${cleanCurrent}`,
+      currentVersion: isInstalled ? `v${cleanCurrent}` : '未安装',
       error: err.message
     };
   }
