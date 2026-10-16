@@ -1,645 +1,364 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
-import {
-  getStore,
-  saveStore,
-  createReleaseFromApk,
-  resendReleaseEmail,
-  deleteRelease
-} from './services/releaseService.js';
+
 import {
   createGitHubRelease,
   checkLatestRelease,
+  formatAssetFileName,
   DEFAULT_REPO,
-  DEFAULT_PACKAGE_NAME
+  DEFAULT_PACKAGE_NAME,
+  DEFAULT_APP_NAME,
+  normalizeVersion
 } from './services/githubReleaseService.js';
+import { inspectApk } from './services/apkInspector.js';
 import {
-  pushGitTag,
-  GITHUB_REPO,
-  SSH_REMOTE_URL
-} from './services/gitService.js';
+  ensureStageDir,
+  newStagedId,
+  stagedApkPath,
+  saveMeta,
+  readMeta,
+  removeStaged,
+  sweepStale
+} from './services/staging.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const PORT = process.env.PORT || 3000;
-const DATA_DIR = path.join(__dirname, 'data');
-const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// Multipart Form-Data Parser
-function parseMultipartFormData(buffer, boundary) {
-  const parts = [];
-  const boundaryBuffer = Buffer.from(`--${boundary}`);
+const REPO = (process.env.GITHUB_REPO || DEFAULT_REPO).trim();
+const TOKEN = (process.env.GITHUB_TOKEN || '').trim();
+// 门市里看到的 App 显示名，由对接时约定；可用 GITHUB_APP_NAME 覆盖
+const APP_NAME = (process.env.GITHUB_APP_NAME || DEFAULT_APP_NAME).trim();
+const START_PORT = Number(process.env.PORT) || 3000;
 
-  let startIndex = 0;
+// GitHub 单个 Release 附件上限 2GB
+const MAX_APK_BYTES = 2 * 1024 * 1024 * 1024;
 
-  while (true) {
-    const boundaryIndex = buffer.indexOf(boundaryBuffer, startIndex);
-    if (boundaryIndex === -1) break;
+let actualPort = START_PORT;
 
-    const nextBoundaryIndex = buffer.indexOf(boundaryBuffer, boundaryIndex + boundaryBuffer.length);
-    if (nextBoundaryIndex === -1) break;
-
-    const partBuffer = buffer.slice(boundaryIndex + boundaryBuffer.length, nextBoundaryIndex);
-    startIndex = nextBoundaryIndex;
-
-    const headerEndIndex = partBuffer.indexOf('\r\n\r\n');
-    if (headerEndIndex === -1) continue;
-
-    const headerText = partBuffer.slice(0, headerEndIndex).toString('utf-8');
-    let bodyBuffer = partBuffer.slice(headerEndIndex + 4);
-    if (bodyBuffer.length >= 2 && bodyBuffer[bodyBuffer.length - 2] === 0x0d && bodyBuffer[bodyBuffer.length - 1] === 0x0a) {
-      bodyBuffer = bodyBuffer.slice(0, bodyBuffer.length - 2);
-    }
-
-    const dispositionMatch = headerText.match(/Content-Disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]+)")?/i);
-    if (!dispositionMatch) continue;
-
-    const name = dispositionMatch[1];
-    const filename = dispositionMatch[2] || null;
-
-    const contentTypeMatch = headerText.match(/Content-Type:\s*([^\r\n]+)/i);
-    const contentType = contentTypeMatch ? contentTypeMatch[1].trim() : 'text/plain';
-
-    parts.push({
-      name,
-      filename,
-      contentType,
-      data: bodyBuffer
-    });
-  }
-
-  return parts;
-}
-
-// MIME Types for Static Files
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.apk': 'application/vnd.android.package-archive'
+  '.ico': 'image/x-icon'
 };
 
-// HTTP Server
-const server = http.createServer(async (req, res) => {
-  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = parsedUrl.pathname;
-  const method = req.method.toUpperCase();
+function sendJson(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body)
+  });
+  res.end(body);
+}
 
-  // CORS Headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-  if (method === 'OPTIONS') {
-    res.writeHead(204);
-    return res.end();
+async function readJsonBody(req, limit = 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new Error('请求体过大');
+    chunks.push(chunk);
   }
+  return size ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+}
 
-  // ==================== REST API ROUTES ====================
+// ---------------------------------------------------------------- /api/config
 
-  // 1. GET /api/releases: Get release list and stats
-  if (pathname === '/api/releases' && method === 'GET') {
-    const store = getStore();
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    return res.end(JSON.stringify({
-      code: 0,
-      data: {
-        releases: [...store.releases].sort((a, b) => b.id - a.id),
-        total: store.releases.length,
-        nextReleaseName: `release-${store.nextId}`,
-        emailSettings: store.emailSettings
+function handleConfig(res) {
+  sendJson(res, 200, {
+    ok: true,
+    repo: REPO,
+    hasToken: Boolean(TOKEN),
+    appName: APP_NAME,
+    expectedPackageName: DEFAULT_PACKAGE_NAME,
+    port: actualPort
+  });
+}
+
+// ---------------------------------------------------------------- /api/inspect
+
+/**
+ * 接收原始 APK 字节（Content-Type: application/octet-stream，文件名放 X-Filename），
+ * 边落盘边算 MD5，然后解析出包名/版本号返回给用户确认。不会碰 GitHub。
+ */
+async function handleInspect(req, res) {
+  sweepStale();
+  ensureStageDir();
+
+  const stagedId = newStagedId();
+  const apkPath = stagedApkPath(stagedId);
+
+  const hash = crypto.createHash('md5');
+  let size = 0;
+  let tooBig = false;
+
+  const meter = new Transform({
+    transform(chunk, _enc, cb) {
+      size += chunk.length;
+      if (size > MAX_APK_BYTES) {
+        tooBig = true;
+        return cb(new Error('APK 超过 2GB，超出 GitHub 附件上限'));
       }
-    }));
-  }
-
-  // 2. POST /api/releases/upload: Upload APK, auto-increment release-N, generate release package & send email notification
-  if (pathname === '/api/releases/upload' && method === 'POST') {
-    const contentType = req.headers['content-type'] || '';
-    if (!contentType.includes('multipart/form-data')) {
-      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 400, message: 'Invalid Content-Type, expected multipart/form-data' }));
+      hash.update(chunk);
+      cb(null, chunk);
     }
+  });
 
-    const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
-    if (!boundaryMatch) {
-      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 400, message: 'Multipart boundary missing' }));
-    }
-
-    const boundary = boundaryMatch[1].replace(/^["']|["']$/g, '');
-    const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
-    req.on('end', async () => {
-      try {
-        const fullBuffer = Buffer.concat(chunks);
-        const parts = parseMultipartFormData(fullBuffer, boundary);
-
-        let filePart = null;
-        const fields = {};
-
-        for (const part of parts) {
-          if (part.filename) {
-            filePart = part;
-          } else {
-            fields[part.name] = part.data.toString('utf-8');
-          }
-        }
-
-        if (!filePart || !filePart.data || filePart.data.length === 0) {
-          const sampleApkPath = path.join(__dirname, 'sample-debug.apk');
-          if (fs.existsSync(sampleApkPath)) {
-            filePart = {
-              filename: 'sample-debug.apk',
-              data: fs.readFileSync(sampleApkPath)
-            };
-          } else {
-            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-            return res.end(JSON.stringify({ code: 400, message: '未检测到有效的 APK 文件，请选择或拖拽 APK' }));
-          }
-        }
-
-        const host = req.headers.host || `localhost:${PORT}`;
-        const sendEmail = fields.sendEmail === 'true'; // 默认免除邮箱通知
-
-        // Call core release engine to build release package
-        const { release, emailRecord } = createReleaseFromApk({
-          fileBuffer: filePart.data,
-          originalFileName: filePart.filename || 'app.apk',
-          version: fields.version,
-          channel: fields.channel,
-          changelog: fields.changelog,
-          recipients: fields.recipients,
-          host,
-          sendEmail
-        });
-
-        // 自动创建 Git Tag 并尝试通过 SSH 推送到 GitHub
-        let gitResult = null;
-        try {
-          gitResult = await pushGitTag({
-            tag: release.gitTag,
-            message: release.changelog
-          });
-          release.gitPushStatus = gitResult.success ? 'pushed' : 'tagged_locally';
-          release.gitPushMessage = gitResult.message;
-        } catch (gitErr) {
-          console.warn('[Git SSH push]:', gitErr.message);
-        }
-
-        // 自动创建 GitHub Release 并上传 APK Asset (若已配置 GitHub Token)
-        let ghResult = null;
-        const currentStore = getStore();
-        const ghToken = process.env.GITHUB_TOKEN || currentStore.githubSettings?.token || '';
-        if (ghToken) {
-          try {
-            console.log(`[GitHub Release] 正在自动发布 ${release.gitTag} 至 GitHub Release 并上传 Asset...`);
-            ghResult = await createGitHubRelease({
-              repo: currentStore.githubSettings?.repo || DEFAULT_REPO,
-              tag: release.gitTag,
-              versionName: release.version,
-              packageName: currentStore.githubSettings?.packageName || DEFAULT_PACKAGE_NAME,
-              appName: currentStore.githubSettings?.appName || 'TPOS 客户端',
-              changelog: release.changelog,
-              apkFilePath: release.filePath,
-              token: ghToken,
-              isLatest: true,
-              isPrerelease: false
-            });
-            release.githubRelease = ghResult.release;
-            release.githubStatus = 'published';
-            saveStore(currentStore);
-            console.log(`[GitHub Release] 自动发布成功: ${ghResult.release.htmlUrl}`);
-          } catch (ghErr) {
-            console.warn('[GitHub Release 自动发布异常]:', ghErr.message);
-            release.githubStatus = 'failed';
-            release.githubError = ghErr.message;
-            saveStore(currentStore);
-          }
-        }
-
-        console.log(`[Release Engine] 成功生成 ${release.gitTag || release.releaseName} (${release.fileSizeFormatted}) - Git状态: ${release.gitPushStatus || 'ready'} - GitHub状态: ${release.githubStatus || 'pending'}`);
-
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        return res.end(JSON.stringify({
-          code: 0,
-          message: `成功生成发布包 ${release.gitTag || release.releaseName}${gitResult ? ' (' + gitResult.message + ')' : ''}${ghResult ? ' 且已成功发布至 GitHub Release！' : ''}`,
-          data: { release, emailRecord, gitResult, ghResult }
-        }));
-      } catch (err) {
-        console.error('Error processing upload:', err);
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        return res.end(JSON.stringify({ code: 500, message: '服务端处理 APK 文件失败: ' + err.message }));
-      }
+  try {
+    await pipeline(req, meter, fs.createWriteStream(apkPath));
+  } catch (err) {
+    await fs.promises.rm(apkPath, { force: true });
+    return sendJson(res, 400, {
+      ok: false,
+      error: tooBig ? err.message : `接收文件失败：${err.message}`
     });
-    return;
   }
 
-  // 3. GET /api/releases/:id/download: Download APK file
-  const downloadMatch = pathname.match(/^\/api\/releases\/(\d+)\/download$/);
-  if (downloadMatch && method === 'GET') {
-    const releaseId = parseInt(downloadMatch[1], 10);
-    const store = getStore();
-    const release = store.releases.find(r => r.id === releaseId);
+  if (size === 0) {
+    await fs.promises.rm(apkPath, { force: true });
+    return sendJson(res, 400, { ok: false, error: '没有收到文件内容，请重新拖入 APK' });
+  }
 
-    if (!release || !fs.existsSync(release.filePath)) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 404, message: '未找到该 Release 安装包或文件已丢失' }));
+  let info;
+  try {
+    info = inspectApk(apkPath);
+  } catch (err) {
+    await fs.promises.rm(apkPath, { force: true });
+    return sendJson(res, 400, { ok: false, error: err.message, code: err.code || 'INSPECT_FAILED' });
+  }
+
+  let fileName = 'release.apk';
+  try {
+    const raw = req.headers['x-filename'];
+    if (raw) fileName = decodeURIComponent(String(raw));
+  } catch {
+    /* 文件名解不出来就用默认值，不影响发布 */
+  }
+
+  const md5 = hash.digest('hex');
+  saveMeta(stagedId, { fileName, size, md5, ...info, stagedAt: new Date().toISOString() });
+
+  // 规范自检（前 4 项不通过就不该发；第 5 项只提醒，不拦）
+  const checks = [
+    {
+      key: 'tag',
+      label: 'Release tag 为 vX.Y.Z 格式',
+      ok: /^v\d+\.\d+\.\d+/.test(info.tag),
+      detail: info.tag
+    },
+    {
+      key: 'version',
+      label: 'tag 与 APK 内 versionName 一致',
+      ok: normalizeVersion(info.tag) === normalizeVersion(info.versionName),
+      detail: `${info.tag} ↔ ${info.versionName}`
+    },
+    {
+      key: 'package',
+      label: 'packageName 格式合法',
+      ok: /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(info.packageName),
+      detail: info.packageName
+    },
+    {
+      key: 'apk',
+      label: '产物为 .apk 附件',
+      ok: fileName.toLowerCase().endsWith('.apk'),
+      detail: fileName
+    },
+    {
+      key: 'expectedPackage',
+      label: `包名与对接约定一致（${DEFAULT_PACKAGE_NAME}）`,
+      ok: info.packageName === DEFAULT_PACKAGE_NAME,
+      warnOnly: true,
+      detail: info.packageName
     }
+  ];
 
-    const stat = fs.statSync(release.filePath);
+  sendJson(res, 200, {
+    ok: true,
+    stagedId,
+    fileName,
+    size,
+    md5,
+    packageName: info.packageName,
+    versionName: info.versionName,
+    versionCode: info.versionCode,
+    version: info.version,
+    tag: info.tag,
+    assetName: formatAssetFileName(info.packageName, info.version),
+    aapt: info.aapt,
+    repo: REPO,
+    checks
+  });
+}
+
+// ---------------------------------------------------------------- /api/publish
+
+async function handlePublish(req, res) {
+  let payload;
+  try {
+    payload = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: `请求体不是合法 JSON：${err.message}` });
+  }
+
+  const { stagedId, changelog = '', prerelease = false, appName, dryRun = false } = payload || {};
+
+  let apkPath;
+  try {
+    apkPath = stagedApkPath(stagedId);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+
+  if (!fs.existsSync(apkPath)) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: '暂存文件已失效（可能超过 1 小时被自动清理），请重新拖入 APK'
+    });
+  }
+
+  if (!String(changelog).trim()) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: '更新说明不能为空 —— 规范要求它写进 Release 正文，会显示在车机更新弹窗里'
+    });
+  }
+
+  if (!dryRun && !TOKEN) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: '未配置 GITHUB_TOKEN。请复制 .env.example 为 .env，填入 GitHub token（需 repo 权限）后重启服务。'
+    });
+  }
+
+  const meta = readMeta(stagedId) || {};
+  const isPrerelease = Boolean(prerelease);
+
+  try {
+    const result = await createGitHubRelease({
+      repo: REPO,
+      versionName: meta.versionName || meta.version,
+      packageName: meta.packageName,
+      appName: appName || APP_NAME,
+      changelog,
+      isPrerelease,
+      isLatest: !isPrerelease,
+      apkFilePath: apkPath,
+      token: TOKEN,
+      dryRun: Boolean(dryRun)
+    });
+
+    if (!dryRun) removeStaged(stagedId); // 发布成功即清掉暂存
+
+    return sendJson(res, 200, { ok: true, ...result });
+  } catch (err) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: err.message,
+      validationErrors: err.validationErrors
+    });
+  }
+}
+
+// ---------------------------------------------------------------- /api/latest
+
+/** 用第三方平台的方式回读一次 /releases/latest，验证发布结果 */
+async function handleLatest(res, url) {
+  const currentVersion = url.searchParams.get('current') || '';
+  const result = await checkLatestRelease({ repo: REPO, currentVersion, token: TOKEN });
+  sendJson(res, 200, { ok: true, ...result });
+}
+
+// ---------------------------------------------------------------- static
+
+function serveStatic(res, pathname) {
+  let rel;
+  try {
+    rel = decodeURIComponent(pathname);
+  } catch {
+    rel = '/';
+  }
+  if (rel === '/' || rel === '') rel = '/index.html';
+
+  const resolved = path.resolve(PUBLIC_DIR, '.' + path.posix.normalize(rel));
+  if (resolved !== PUBLIC_DIR && !resolved.startsWith(PUBLIC_DIR + path.sep)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('403 Forbidden');
+  }
+
+  if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
     res.writeHead(200, {
-      'Content-Type': 'application/vnd.android.package-archive',
-      'Content-Length': stat.size,
-      'Content-Disposition': `attachment; filename="${encodeURIComponent(release.storedFileName || `${release.releaseName}.apk`)}"`,
-      'Cache-Control': 'no-cache'
+      'Content-Type': MIME_TYPES[path.extname(resolved).toLowerCase()] || 'application/octet-stream',
+      'Cache-Control': 'no-store'
     });
-
-    const readStream = fs.createReadStream(release.filePath);
-    return readStream.pipe(res);
-  }
-
-  // 4. POST /api/releases/:id/resend-email: Resend email notification
-  const resendMatch = pathname.match(/^\/api\/releases\/(\d+)\/resend-email$/);
-  if (resendMatch && method === 'POST') {
-    const releaseId = parseInt(resendMatch[1], 10);
-    try {
-      const emailRecord = resendReleaseEmail(releaseId);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({
-        code: 0,
-        message: `已重新向相关人员发送 ${emailRecord.releaseName} 的发布邮件`,
-        data: emailRecord
-      }));
-    } catch (err) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 404, message: err.message }));
-    }
-  }
-
-  // 5. DELETE /api/releases/:id: Delete release
-  const deleteMatch = pathname.match(/^\/api\/releases\/(\d+)$/);
-  if (deleteMatch && method === 'DELETE') {
-    const releaseId = parseInt(deleteMatch[1], 10);
-    try {
-      const removed = deleteRelease(releaseId);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 0, message: `已成功删除 ${removed.releaseName}` }));
-    } catch (err) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 404, message: err.message }));
-    }
-  }
-
-  // 5.1 POST /api/releases/:id/sync-github: 同步指定发布包至 GitHub Release 并上传附件
-  const syncMatch = pathname.match(/^\/api\/releases\/(\d+)\/sync-github$/);
-  if (syncMatch && method === 'POST') {
-    const releaseId = parseInt(syncMatch[1], 10);
-    const store = getStore();
-    const release = store.releases.find(r => r.id === releaseId);
-    if (!release) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 404, message: '未找到该 Release' }));
-    }
-
-    const ghToken = process.env.GITHUB_TOKEN || store.githubSettings?.token || '';
-    if (!ghToken) {
-      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({
-        code: 400,
-        message: '未配置 GitHub Token，请先在配置中填入您的 GitHub Personal Access Token (需勾选 repo 权限)'
-      }));
-    }
-
-    try {
-      const ghResult = await createGitHubRelease({
-        repo: store.githubSettings?.repo || DEFAULT_REPO,
-        tag: release.gitTag || `v${(release.version || '1.0.0').replace(/^v/, '')}`,
-        versionName: (release.version || '1.0.0').replace(/^v/, ''),
-        packageName: store.githubSettings?.packageName || 'com.sunmi.sm3xr4ap.restaurant_desktop',
-        appName: store.githubSettings?.appName || 'TPOS 客户端',
-        changelog: release.changelog || '日常构建更新，性能优化与稳定性提升',
-        apkFilePath: release.filePath,
-        token: ghToken,
-        isLatest: true,
-        isPrerelease: false
-      });
-
-      release.githubRelease = ghResult.release;
-      release.githubStatus = 'published';
-      saveStore(store);
-
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({
-        code: 0,
-        message: `成功同步 ${release.gitTag || release.releaseName} 至 GitHub Release，Asset 附件已就绪！`,
-        data: ghResult
-      }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({
-        code: 500,
-        message: `同步 GitHub Release 失败: ${err.message}`
-      }));
-    }
-  }
-
-  // 6. GET & POST /api/email/settings
-  if (pathname === '/api/email/settings') {
-    const store = getStore();
-    if (method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 0, data: store.emailSettings }));
-    }
-    if (method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try {
-          const payload = JSON.parse(body || '{}');
-          store.emailSettings = { ...store.emailSettings, ...payload };
-          saveStore(store);
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          return res.end(JSON.stringify({ code: 0, message: '邮件通知配置已保存', data: store.emailSettings }));
-        } catch (err) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          return res.end(JSON.stringify({ code: 400, message: '非法 JSON 数据' }));
-        }
-      });
-      return;
-    }
-  }
-
-  // 7. GET /api/email/logs
-  if (pathname === '/api/email/logs' && method === 'GET') {
-    const store = getStore();
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    return res.end(JSON.stringify({ code: 0, data: store.emailLogs || [] }));
-  }
-
-  // 8. POST /api/github/release: Create release adhering to third-party spec
-  if (pathname === '/api/github/release' && method === 'POST') {
-    const contentType = req.headers['content-type'] || '';
-    const store = getStore();
-    const ghConfig = store.githubSettings || {};
-
-    if (contentType.includes('multipart/form-data')) {
-      const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
-      if (!boundaryMatch) {
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        return res.end(JSON.stringify({ code: 400, message: 'Multipart boundary missing' }));
-      }
-
-      const boundary = boundaryMatch[1].replace(/^["']|["']$/g, '');
-      const chunks = [];
-      req.on('data', chunk => chunks.push(chunk));
-      req.on('end', async () => {
-        try {
-          const fullBuffer = Buffer.concat(chunks);
-          const parts = parseMultipartFormData(fullBuffer, boundary);
-          let filePart = null;
-          const fields = {};
-
-          for (const part of parts) {
-            if (part.filename) {
-              filePart = part;
-            } else {
-              fields[part.name] = part.data.toString('utf-8');
-            }
-          }
-
-          let apkBuffer = filePart ? filePart.data : null;
-          let apkFileName = filePart ? filePart.filename : null;
-
-          if (!apkBuffer || apkBuffer.length === 0) {
-            const sampleApkPath = path.join(__dirname, 'sample-debug.apk');
-            if (fs.existsSync(sampleApkPath)) {
-              apkBuffer = fs.readFileSync(sampleApkPath);
-              apkFileName = 'sample-debug.apk';
-            }
-          }
-
-          if (!apkBuffer) {
-            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-            return res.end(JSON.stringify({ code: 400, message: '必须上传有效的 APK 文件' }));
-          }
-
-          const repo = fields.repo || ghConfig.repo || DEFAULT_REPO;
-          const packageName = fields.package || fields.packageName || ghConfig.packageName || DEFAULT_PACKAGE_NAME;
-          const appName = fields.appName || ghConfig.appName || '智驾云 AOT 客户端';
-          const versionName = fields.version || fields.versionName || '';
-          const tag = (fields.tag !== undefined && fields.tag !== '') ? fields.tag : `v${versionName.replace(/^v/, '')}`;
-          const isPrerelease = fields.isPrerelease === 'true' || fields.isPrerelease === true;
-          const isLatest = fields.isLatest === 'true' || fields.isLatest === true || (!isPrerelease && fields.isLatest !== 'false');
-          const changelog = fields.changelog || '';
-          const token = fields.token || ghConfig.token || process.env.GITHUB_TOKEN || '';
-          const dryRun = fields.dryRun === 'true' || fields.dryRun === true || !token;
-
-          const result = await createGitHubRelease({
-            repo,
-            tag,
-            versionName,
-            packageName,
-            appName,
-            changelog,
-            isPrerelease,
-            isLatest,
-            apkFileName,
-            apkBuffer,
-            token,
-            dryRun
-          });
-
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          return res.end(JSON.stringify({ code: 0, message: result.message, data: result.release, dryRun: result.dryRun }));
-        } catch (err) {
-          console.error('[GitHub Release Error]:', err);
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          return res.end(JSON.stringify({ code: 400, message: err.message, validationErrors: err.validationErrors || [] }));
-        }
-      });
-      return;
-    }
-
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(body || '{}');
-        const repo = payload.repo || ghConfig.repo || DEFAULT_REPO;
-        const packageName = payload.package || payload.packageName || ghConfig.packageName || DEFAULT_PACKAGE_NAME;
-        const appName = payload.appName || ghConfig.appName || '智驾云 AOT 客户端';
-        const versionName = payload.version || payload.versionName || '';
-        const tag = (payload.tag !== undefined && payload.tag !== '') ? payload.tag : `v${versionName.replace(/^v/, '')}`;
-        const isPrerelease = Boolean(payload.isPrerelease);
-        const isLatest = payload.isLatest !== undefined ? Boolean(payload.isLatest) : !isPrerelease;
-        const changelog = payload.changelog || '';
-        const token = payload.token || ghConfig.token || process.env.GITHUB_TOKEN || '';
-        const dryRun = payload.dryRun !== undefined ? Boolean(payload.dryRun) : !token;
-
-        const sampleApkPath = path.join(__dirname, 'sample-debug.apk');
-        const apkBuffer = fs.readFileSync(sampleApkPath);
-
-        const result = await createGitHubRelease({
-          repo,
-          tag,
-          versionName,
-          packageName,
-          appName,
-          changelog,
-          isPrerelease,
-          isLatest,
-          apkFileName: 'sample-debug.apk',
-          apkBuffer,
-          token,
-          dryRun
-        });
-
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        return res.end(JSON.stringify({ code: 0, message: result.message, data: result.release, dryRun: result.dryRun }));
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        return res.end(JSON.stringify({ code: 400, message: err.message, validationErrors: err.validationErrors || [] }));
-      }
-    });
-    return;
-  }
-
-  // 9. GET /api/github/check-update: Monitor check update endpoint
-  if (pathname === '/api/github/check-update' && method === 'GET') {
-    const store = getStore();
-    const ghConfig = store.githubSettings || {};
-    const repo = parsedUrl.searchParams.get('repo') || ghConfig.repo || DEFAULT_REPO;
-    const currentVersion = parsedUrl.searchParams.get('currentVersion') || 'v0.0.0';
-    const token = ghConfig.token || process.env.GITHUB_TOKEN || '';
-
-    try {
-      const updateInfo = await checkLatestRelease({ repo, currentVersion, token });
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 0, data: updateInfo }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 500, message: err.message }));
-    }
-  }
-
-  // 10. GET & POST /api/github/config: Manage GitHub repo and token
-  if (pathname === '/api/github/config') {
-    const store = getStore();
-    if (method === 'GET') {
-      const cfg = store.githubSettings || {
-        repo: DEFAULT_REPO,
-        packageName: DEFAULT_PACKAGE_NAME,
-        appName: '智驾云 AOT 客户端',
-        token: ''
-      };
-      const safeConfig = {
-        repo: cfg.repo || DEFAULT_REPO,
-        packageName: cfg.packageName || DEFAULT_PACKAGE_NAME,
-        appName: cfg.appName || '智驾云 AOT 客户端',
-        hasToken: Boolean(cfg.token || process.env.GITHUB_TOKEN),
-        tokenMasked: (cfg.token || process.env.GITHUB_TOKEN) ? 'ghp_••••••••••••••••' : ''
-      };
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ code: 0, data: safeConfig }));
-    }
-    if (method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try {
-          const payload = JSON.parse(body || '{}');
-          store.githubSettings = {
-            ...(store.githubSettings || {}),
-            repo: payload.repo || DEFAULT_REPO,
-            packageName: payload.packageName || DEFAULT_PACKAGE_NAME,
-            appName: payload.appName || '智驾云 AOT 客户端'
-          };
-          if (payload.token !== undefined && payload.token !== 'ghp_••••••••••••••••') {
-            const rawToken = payload.token.trim();
-            if (rawToken.startsWith('SHA256:') || rawToken.startsWith('ssh-') || rawToken.includes('id_rsa') || rawToken.includes('id_ed25519')) {
-              res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-              return res.end(JSON.stringify({
-                code: 400,
-                message: '❌ 您输入的是 SSH 密钥指纹 (以 SHA256: 开头)，并非 GitHub Personal Access Token！\n正确的 GitHub Token 通常以 ghp_ 开头。\n请访问 https://github.com/settings/tokens/new 生成并勾选 repo 权限。'
-              }));
-            }
-            store.githubSettings.token = rawToken;
-          }
-          saveStore(store);
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          return res.end(JSON.stringify({ code: 0, message: 'GitHub 规范配置已保存' }));
-        } catch (err) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          return res.end(JSON.stringify({ code: 400, message: '非法 JSON 数据' }));
-        }
-      });
-      return;
-    }
-  }
-
-  // ==================== STATIC FILE SERVING ====================
-  let safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
-  if (safePath === '/' || safePath === '') safePath = '/index.html';
-
-  const filePath = path.join(PUBLIC_DIR, safePath);
-
-  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-    const ext = path.extname(filePath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': contentType });
-    const stream = fs.createReadStream(filePath);
-    return stream.pipe(res);
-  }
-
-  const indexHtml = path.join(PUBLIC_DIR, 'index.html');
-  if (fs.existsSync(indexHtml)) {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    const stream = fs.createReadStream(indexHtml);
-    return stream.pipe(res);
+    return fs.createReadStream(resolved).pipe(res);
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('404 Not Found');
+}
+
+// ---------------------------------------------------------------- server
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const pathname = url.pathname;
+  const method = (req.method || 'GET').toUpperCase();
+
+  try {
+    if (pathname === '/api/config' && method === 'GET') return handleConfig(res);
+    if (pathname === '/api/inspect' && method === 'POST') return await handleInspect(req, res);
+    if (pathname === '/api/publish' && method === 'POST') return await handlePublish(req, res);
+    if (pathname === '/api/latest' && method === 'GET') return await handleLatest(res, url);
+
+    if (pathname.startsWith('/api/')) {
+      return sendJson(res, 404, { ok: false, error: `未知接口: ${method} ${pathname}` });
+    }
+
+    return serveStatic(res, pathname);
+  } catch (err) {
+    console.error('[server error]', err);
+    if (!res.headersSent) return sendJson(res, 500, { ok: false, error: err.message });
+    res.end();
+  }
 });
 
 export { server };
 
-// 仅在直接执行时监听端口 (支持 EADDRINUSE 自动切端口与释放提示)
 if (process.argv[1] && process.argv[1].endsWith('server.js')) {
-  let currentPort = Number(PORT);
+  ensureStageDir();
 
   function startServer(port) {
+    actualPort = port;
     server.listen(port, () => {
-      console.log(`\n======================================================`);
-      console.log(`🚀 AOT APK Release 服务已启动: http://localhost:${port}`);
-      console.log(`📦 Release 规范 Tag 与 SSH 远端: git@github.com:ZJaCloud/aot-release-apk.git`);
-      console.log(`📁 存储目录: ${UPLOADS_DIR}`);
-      console.log(`======================================================\n`);
+      console.log('');
+      console.log('  ┌───────────────────────────────────────────────');
+      console.log(`  │  打开这个地址：http://localhost:${port}`);
+      console.log(`  │  目标仓库：${REPO}`);
+      console.log(`  │  GitHub Token：${TOKEN ? '已配置 ✅' : '未配置 ❌（只能演练，不能真实发布）'}`);
+      console.log('  └───────────────────────────────────────────────');
+      console.log('');
     });
   }
 
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-      const nextPort = currentPort + 1;
-      console.warn(`\n⚠️ 端口 ${currentPort} 已被占用（说明您之前启动的 Node 进程仍在运行中）。`);
-      console.log(`💡 若想释放并继续使用端口 ${currentPort}，请在终端执行:`);
-      console.log(`   kill -9 $(lsof -t -i :${currentPort})\n`);
-      console.log(`👉 系统现已自动为您切换到端口 ${nextPort} 启动服务：`);
-      currentPort = nextPort;
-      startServer(nextPort);
+      const next = actualPort + 1;
+      console.log(`\n  端口 ${actualPort} 被占用，自动改用 ${next}\n`);
+      startServer(next);
     } else {
       console.error('服务启动异常:', err);
     }
   });
 
-  startServer(currentPort);
+  startServer(actualPort);
 }

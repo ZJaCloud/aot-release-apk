@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   validateReleaseSpec,
   formatAssetFileName,
@@ -8,14 +5,14 @@ import {
   createGitHubRelease,
   checkLatestRelease,
   compareSemver,
+  normalizeVersion,
+  toTag,
   DEFAULT_REPO,
   DEFAULT_PACKAGE_NAME
 } from '../services/githubReleaseService.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const ROOT_DIR = path.resolve(__dirname, '..');
-const SAMPLE_APK = path.join(ROOT_DIR, 'sample-debug.apk');
+// 合成一个最小的假 APK 字节流：createGitHubRelease 只要求文件内容非空，不解析 APK 内部结构
+const FAKE_APK = Buffer.concat([Buffer.from('PK\x03\x04'), Buffer.alloc(2048, 0x41)]);
 
 async function runSpecTests() {
   console.log('================================================================');
@@ -183,7 +180,7 @@ async function runSpecTests() {
     changelog: '1. 首次按照第三方规范正式发版\n2. 适配门市云端 App 下载',
     isPrerelease: false,
     isLatest: true,
-    apkFilePath: SAMPLE_APK,
+    apkBuffer: FAKE_APK,
     dryRun: true
   });
 
@@ -209,7 +206,7 @@ async function runSpecTests() {
     changelog: '测试内部先行版本',
     isPrerelease: true,
     isLatest: false,
-    apkFilePath: SAMPLE_APK,
+    apkBuffer: FAKE_APK,
     dryRun: true
   });
 
@@ -227,6 +224,47 @@ async function runSpecTests() {
   assert(compareSemver('2.14.5', '2.15.0') === -1, 'Tag 2.14.5 < 已安装 2.15.0 判定无需更新');
   assert(compareSemver('v2.14.10', 'v2.14.5') === 1, 'Semver 补丁版本号 10 > 5 正确按数值比对');
   assert(compareSemver('V2.14.5', '') === 1, '未安装状态下，只要有最新版本即提示安装');
+
+  // -------------------------------------------------------------
+  // 测试 9: 大写 V 的 versionName 归一化 (真包回归测试)
+  // 真包 com.sunmi.sm3xr4ap.restaurant_desktop 的 versionName 是 'V2.14.5'（大写 V）。
+  // 早期实现只剥小写 v，会算出 tag 'vV2.14.5'，然后被自己的规范校验拦下 —— 真包根本发不出去。
+  // -------------------------------------------------------------
+  console.log('\n▶️ [测试组 9] 校验大写 V 版本号归一化 (真包回归)...');
+
+  assert(normalizeVersion('V2.14.5') === '2.14.5', "normalizeVersion('V2.14.5') -> '2.14.5'");
+  assert(normalizeVersion('v2.14.5') === '2.14.5', "normalizeVersion('v2.14.5') -> '2.14.5'");
+  assert(normalizeVersion(' 2.14.5 ') === '2.14.5', "normalizeVersion(' 2.14.5 ') 正确去除空白");
+  assert(toTag('V2.14.5') === 'v2.14.5', "toTag('V2.14.5') -> 'v2.14.5'");
+
+  const upperVSpec = validateReleaseSpec({
+    repo: DEFAULT_REPO,
+    tag: toTag('V2.14.5'),
+    versionName: 'V2.14.5',
+    packageName: DEFAULT_PACKAGE_NAME,
+    isPrerelease: false,
+    isLatest: true,
+    body: '真包大写 V 回归',
+    apkFileName: `${DEFAULT_PACKAGE_NAME}-v2.14.5.apk`
+  });
+  assert(upperVSpec.valid, '真包 versionName 为 V2.14.5 时，tag v2.14.5 能通过规范校验（回归）');
+
+  const upperVRelease = await createGitHubRelease({
+    repo: DEFAULT_REPO,
+    versionName: 'V2.14.5',
+    packageName: DEFAULT_PACKAGE_NAME,
+    changelog: '真包大写 V 回归',
+    isPrerelease: false,
+    isLatest: true,
+    apkBuffer: FAKE_APK,
+    dryRun: true
+  });
+  assert(upperVRelease.release.tag === 'v2.14.5', `真包 dry-run 生成的 tag 为 v2.14.5（实际 ${upperVRelease.release.tag}）`);
+  assert(upperVRelease.release.payload.tag_name === 'v2.14.5', 'API payload 的 tag_name 为 v2.14.5');
+  assert(
+    upperVRelease.release.asset.name === `${DEFAULT_PACKAGE_NAME}-v2.14.5.apk`,
+    '附件名为规范推荐的 {packageName}-v{version}.apk'
+  );
 
   console.log('\n================================================================');
   console.log(`🎉 全部 ${passedTests}/${totalTests} 个测试用例通过 (100% PASS)！`);

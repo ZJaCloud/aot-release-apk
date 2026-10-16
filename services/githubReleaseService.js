@@ -10,6 +10,26 @@ export const DEFAULT_PACKAGE_NAME = 'com.sunmi.sm3xr4ap.restaurant_desktop'; // 
 export const DEFAULT_APP_NAME = 'TPOS 餐厅收银桌面端';
 
 /**
+ * 归一化版本号：去掉前导 v / V（大小写都要剥）与两端空白。
+ * 例：'V2.14.5' -> '2.14.5'，'v2.14.5' -> '2.14.5'，' 2.14.5 ' -> '2.14.5'
+ *
+ * 注意：真包（com.sunmi.sm3xr4ap.restaurant_desktop）的 versionName 是 'V2.14.5'（大写 V），
+ * 所以这里必须用 /^[vV]/ —— 只剥小写 v 会导致 tag 变成 'vV2.14.5' 并被规范校验拦下。
+ */
+export function normalizeVersion(v) {
+  return String(v ?? '').trim().replace(/^[vV]/, '');
+}
+
+/**
+ * 由版本号生成规范 Tag：小写 v + 纯数字版本（'V2.14.5' -> 'v2.14.5'）。
+ * 规范 §3 明确 Monitor 会剥掉前导 v/V，故大小写均可，这里统一输出小写以贴合 §2 的 vX.Y.Z 字面要求。
+ */
+export function toTag(version) {
+  const clean = normalizeVersion(version);
+  return clean ? `v${clean}` : '';
+}
+
+/**
  * 语义化版本号比较 (支持 v/V 前缀)
  * 返回: 1 表示 v1 > v2; -1 表示 v1 < v2; 0 表示相等
  */
@@ -60,9 +80,9 @@ export function validateReleaseSpec({ repo, tag, versionName, packageName, isPre
     errors.push(`Tag 必须严格采用 vX.Y.Z 语义化版本格式 (如 v1.0.0)，当前为: ${tag}`);
   }
 
-  // 4. versionName 与 Tag 一致性检查
-  const cleanVersion = (versionName || '').trim().replace(/^v/, '');
-  const cleanTagVersion = (tag || '').trim().replace(/^v/, '');
+  // 4. versionName 与 Tag 一致性检查（大小写 v/V 一律归一后再比）
+  const cleanVersion = normalizeVersion(versionName);
+  const cleanTagVersion = normalizeVersion(tag);
   if (!cleanVersion) {
     errors.push('必须提供 APK 的 versionName');
   } else if (cleanVersion !== cleanTagVersion) {
@@ -95,10 +115,10 @@ export function validateReleaseSpec({ repo, tag, versionName, packageName, isPre
  * 规范：建议 {packageName}-{version}.apk 或 app-release.apk
  */
 export function formatAssetFileName(packageName, version, preferredName) {
-  if (preferredName && (preferredName === 'app-release.apk' || preferredName.endsWith('.apk'))) {
+  if (preferredName && preferredName.toLowerCase().endsWith('.apk')) {
     return preferredName;
   }
-  const cleanVer = (version || '').trim().replace(/^v/, '');
+  const cleanVer = normalizeVersion(version);
   const cleanPkg = (packageName || DEFAULT_PACKAGE_NAME).trim();
   return `${cleanPkg}-v${cleanVer}.apk`;
 }
@@ -106,7 +126,7 @@ export function formatAssetFileName(packageName, version, preferredName) {
 /**
  * 构建符合更新对话框展示的 Release 说明 (body)
  */
-export function formatReleaseBody({ changelog, appName = '智驾云 AOT 客户端', packageName, versionName, isPrerelease }) {
+export function formatReleaseBody({ changelog, appName = DEFAULT_APP_NAME, packageName, versionName, isPrerelease }) {
   const dateStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
   const typeBadge = isPrerelease ? '🧪 内部/测试版 (Pre-release)' : '🚀 生产/正式版 (Latest)';
 
@@ -114,7 +134,7 @@ export function formatReleaseBody({ changelog, appName = '智驾云 AOT 客户�
 
 - **发布类型**：${typeBadge}
 - **应用包名**：\`${packageName}\`
-- **版本号**：\`v${versionName.replace(/^v/, '')}\`
+- **版本号**：\`${toTag(versionName)}\`
 - **发布时间**：${dateStr}
 
 ---
@@ -135,22 +155,26 @@ export async function createGitHubRelease(options) {
     tag,
     versionName,
     packageName = DEFAULT_PACKAGE_NAME,
-    appName = '智驾云 AOT 客户端',
+    appName = DEFAULT_APP_NAME,
     changelog = '',
     isPrerelease = false,
     isLatest = true,
-    apkFileName = 'app-release.apk',
+    assetName,
+    apkFileName,
     apkBuffer,
     apkFilePath,
     token = process.env.GITHUB_TOKEN || '',
     dryRun = false
   } = options;
 
-  // 统一版本号与 Tag 格式
-  const effectiveVersion = (versionName || '').trim().replace(/^v/, '');
-  const effectiveTag = tag !== undefined && tag !== null && String(tag).trim() !== ''
-    ? String(tag).trim()
-    : (effectiveVersion ? `v${effectiveVersion}` : '');
+  // 统一版本号与 Tag 格式（'V2.14.5' / 'v2.14.5' 都归一成 2.14.5 -> tag 'v2.14.5'）
+  const effectiveVersion = normalizeVersion(versionName);
+  const effectiveTag = toTag(
+    tag !== undefined && tag !== null && String(tag).trim() !== '' ? tag : effectiveVersion
+  );
+
+  // 产物附件名：显式 assetName 优先，其次沿用传入文件名，最后用规范推荐的 {packageName}-v{version}.apk
+  const targetAssetName = formatAssetFileName(packageName, effectiveVersion, assetName || apkFileName);
 
   // 构建 body
   const body = options.body || formatReleaseBody({
@@ -161,7 +185,7 @@ export async function createGitHubRelease(options) {
     isPrerelease
   });
 
-  // 规范校验
+  // 规范校验（用最终产物名做 .apk 校验，避免该校验形同虚设）
   const validation = validateReleaseSpec({
     repo,
     tag: effectiveTag,
@@ -170,7 +194,7 @@ export async function createGitHubRelease(options) {
     isPrerelease,
     isLatest,
     body,
-    apkFileName,
+    apkFileName: targetAssetName,
     fileBuffer: apkBuffer
   });
 
@@ -191,7 +215,6 @@ export async function createGitHubRelease(options) {
   }
 
   const fileMd5 = crypto.createHash('md5').update(fileData).digest('hex');
-  const targetAssetName = formatAssetFileName(packageName, effectiveVersion);
 
   // Payload 构造
   const releasePayload = {
@@ -279,6 +302,27 @@ export async function createGitHubRelease(options) {
       const errorText = await createResp.text();
       throw new Error(`GitHub 创建 Release 失败 (${createResp.status}): ${errorText}`);
     }
+  } else if (createResp.status === 404) {
+    let diagDetail = '';
+    try {
+      const userResp = await fetch('https://api.github.com/user', { headers });
+      const userScopes = userResp.headers.get('x-oauth-scopes') || '';
+      const userData = userResp.ok ? await userResp.json() : {};
+
+      const repoResp = await fetch(`https://api.github.com/repos/${repo}`, { headers });
+      const repoData = repoResp.ok ? await repoResp.json() : null;
+
+      if (!userScopes.includes('repo')) {
+        diagDetail = `\n\n🔍 原因定位：当前 Token 权限不足！\n• 登录用户: ${userData.login || '未知'}\n• 当前 Token 权限 (Scopes): [${userScopes || '未勾选任何权限'}]\n• 必须权限: 创建 Release 需要【repo】写权限。\n👉 解决办法：请前往 https://github.com/settings/tokens/new 重新生成 Token，务必勾选最上方的【repo】复选框！`;
+      } else if (repoResp.status === 404) {
+        diagDetail = `\n\n🔍 原因定位：Token 用户 (${userData.login}) 无权访问组织仓库 ${repo}。\n• 如果组织启用了 SSO 授权限制，请在 GitHub -> Settings -> Developer settings -> Personal access tokens (classic) 中找到该 Token，点击其右侧的【Configure SSO】并点击【Authorize】授权给 ${repo.split('/')[0]} 组织。\n• 请确认用户在组织中具有 Write 权限。`;
+      } else if (repoData && !repoData.permissions?.push) {
+        diagDetail = `\n\n🔍 原因定位：该 Token 对仓库 ${repo} 的 push 写权限为 false。`;
+      }
+    } catch (_) {}
+
+    const errorText = await createResp.text();
+    throw new Error(`GitHub 创建 Release 失败 (404 Not Found): ${errorText}${diagDetail}`);
   } else {
     const errorText = await createResp.text();
     throw new Error(`GitHub 创建 Release 失败 (${createResp.status}): ${errorText}`);
